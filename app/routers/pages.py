@@ -8,7 +8,7 @@ from .. import auth, config, db
 
 router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
-ASSET_VERSION = "1"
+ASSET_VERSION = "3"
 
 
 def _ctx(request: Request, **kw):

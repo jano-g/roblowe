@@ -280,6 +280,15 @@ class Engine:
         rep.market_note = self.market_note
 
         open_syms = {o.get("symbol") for o in (self.broker.open_orders() if self._live() else [])}
+        if not self._live():
+            # dry režim: virtuálne pozície = dnešné dry vstupy bez následného výstupu (inak by kupoval každý cyklus)
+            day_start = clock.now.astimezone(config.MARKET_TZ).replace(hour=0, minute=0, second=0, microsecond=0)
+            for r in db.q("SELECT symbol, kind FROM orders WHERE mode='dry' AND at >= ? ORDER BY id",
+                          (day_start.astimezone(timezone.utc).isoformat(),)):
+                if r["kind"] == "entry":
+                    open_syms.add(r["symbol"])
+                else:
+                    open_syms.discard(r["symbol"])
         entries = 0
         pdt_block = risk.pdt_blocks_entry(acct.equity, acct.daytrade_count, settings.get("respect_pdt"))
         entry_window = (mins_since_open >= settings.get("no_entry_first_min")
@@ -324,7 +333,7 @@ class Engine:
             if not settings.get("agent_enabled"):
                 skip = "agent je vypnutý"
             elif s in open_syms:
-                skip = "už čaká objednávka"
+                skip = "už čaká objednávka" if self._live() else "dry pozícia už otvorená (dnes)"
             elif not entry_window:
                 skip = "mimo vstupného okna (začiatok/koniec seansy)"
             elif len(held) + entries >= settings.get("max_positions"):

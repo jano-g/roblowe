@@ -139,3 +139,12 @@ def test_panic_closes_and_disables():
     assert n == 1 and fb.positions() == []
     assert settings.get("agent_enabled") is False
     assert db.row("SELECT halted FROM days")["halted"] == 1
+
+
+def test_dry_mode_does_not_reenter_same_symbol():
+    fb, eng = make_engine(mode="dry")
+    fb.set_bars("AAA", trend_bars(0.4))
+    eng.cycle()
+    eng.cycle()
+    assert db.q1("SELECT COUNT(*) n FROM orders WHERE kind='entry'")["n"] == 1
+    assert "dry pozícia" in db.row("SELECT reason FROM decisions WHERE symbol='AAA' ORDER BY id DESC")["reason"]

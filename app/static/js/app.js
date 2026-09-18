@@ -92,7 +92,7 @@
     const badge = $('#modeBadge'); badge.textContent = me.mode;
     const sw = el('button', { class: 'switch', role: 'switch', 'aria-checked': String(me.agent_enabled), title: 'Agent zapnutý/vypnutý',
       onclick: toggleAgent });
-    mount($('#topRight'), el('span', { class: 'muted', style: { 'font-size': '.85rem' } }, me.agent_enabled ? 'Agent beží' : 'Agent vypnutý'), sw,
+    mount($('#topRight'), el('span', { class: 'muted agent-lbl', style: { 'font-size': '.85rem' } }, me.agent_enabled ? 'Agent beží' : 'Agent vypnutý'), sw,
       el('button', { class: 'btn small', onclick: () => $('#logoutForm').submit() }, 'Odhlásiť'));
   }
   async function toggleAgent() {
@@ -111,7 +111,8 @@
   function sparkline(points) {
     const w = 600, h = 160, pad = 6;
     if (!points || points.length < 2) return el('p', { class: 'empty' }, 'Krivka equity sa vykreslí po prvých cykloch.');
-    const ys = points.map(p => p.equity); const min = Math.min(...ys), max = Math.max(...ys); const span = (max - min) || 1;
+    const ys = points.map(p => p.equity); let min = Math.min(...ys), max = Math.max(...ys);
+    if (max === min) { min -= 1; max += 1; } const span = max - min;
     const xy = points.map((p, i) => [pad + i * (w - 2 * pad) / (points.length - 1), h - pad - (p.equity - min) / span * (h - 2 * pad)]);
     const d = xy.map((p, i) => (i ? 'L' : 'M') + p[0].toFixed(1) + ' ' + p[1].toFixed(1)).join(' ');
     const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -189,7 +190,7 @@
     const decBody = el('tbody');
     function renderDecisions(act) {
       const items = d.items.filter(x => !act || x.action === act);
-      mount(decBody, items.length ? items.map(x => el('tr', {}, el('td', {}, fmtClock(x.at)), el('td', {}, el('strong', {}, x.symbol)),
+      mount(decBody, items.length ? items.map(x => el('tr', {}, el('td', { class: 'time' }, fmtClock(x.at)), el('td', {}, el('strong', {}, x.symbol)),
         el('td', {}, el('span', { class: 'chip ' + x.action }, ACTION[x.action] || x.action)), el('td', { class: 'num' }, fmtNum(x.price)),
         el('td', { class: 'num ' + signCls(x.score) }, x.score == null ? '–' : (x.score > 0 ? '+' : '') + fmtNum(x.score)),
         el('td', {}, el('div', {}, x.reason), x.details ? el('div', { class: 'decision-reason' }, detailsText(x.details)) : null)))
@@ -199,7 +200,7 @@
     mount(root,
       el('div', { class: 'card' }, el('h2', {}, 'Objednávky', el('span', { class: 'chip' }, String(o.items.length))),
         o.items.length ? el('div', { class: 'table-wrap' }, el('table', {}, el('thead', {}, el('tr', {}, el('th', {}, 'Čas'), el('th', {}, 'Ticker'), el('th', {}, 'Typ'), el('th', { class: 'num' }, 'Ks'), el('th', { class: 'num' }, 'Cena'), el('th', { class: 'num' }, 'Stop / Cieľ'), el('th', {}, 'Stav'), el('th', {}, 'Poznámka'))),
-          el('tbody', {}, o.items.map(x => el('tr', {}, el('td', {}, fmtTime(x.at)), el('td', {}, el('strong', {}, x.symbol)),
+          el('tbody', {}, o.items.map(x => el('tr', {}, el('td', { class: 'time' }, fmtTime(x.at)), el('td', {}, el('strong', {}, x.symbol)),
             el('td', {}, el('span', { class: 'chip ' + (x.side === 'buy' ? 'buy' : 'sell') }, (x.side === 'buy' ? 'kúpa' : 'predaj') + ' · ' + (ACTION[x.kind] || x.kind))),
             el('td', { class: 'num' }, fmtNum(x.qty, 0)), el('td', { class: 'num' }, fmtNum(x.price)),
             el('td', { class: 'num' }, x.stop_price ? fmtNum(x.stop_price) + ' / ' + fmtNum(x.take_profit) : '–'),
@@ -232,6 +233,19 @@
   }
 
   // -- Nastavenia --------------------------------------------------------------------------------
+  const LABEL = {
+    watchlist: 'Sledované tickery', cycle_minutes: 'Interval vyhodnotenia (min)', bar_timeframe: 'Sviečky',
+    risk_per_trade_pct: 'Riziko na obchod (% equity)', max_position_pct: 'Max. pozícia (% equity)', max_positions: 'Max. počet pozícií',
+    daily_loss_limit_pct: 'Denný limit straty (%)', atr_stop_mult: 'Stop-loss (× ATR)', reward_risk: 'Pomer cieľ : riziko',
+    flatten_before_close_min: 'Zavrieť všetko pred koncom (min)', no_entry_first_min: 'Bez vstupov po otvorení (min)',
+    no_entry_after_close_min: 'Bez vstupov pred koncom (min)', respect_pdt: 'Rešpektovať pravidlo PDT',
+    buy_threshold: 'Hranica kúpy', sell_threshold: 'Hranica predaja', tech_weight: 'Váha techniky', news_weight: 'Váha správ',
+    news_min_confidence: 'Min. istota správy', require_news_for_entry: 'Vstup len s katalyzátorom',
+    analyst_enabled: 'Analytik zapnutý', analyst_model: 'Model', analyst_effort: 'Hĺbka uvažovania', analyst_max_headlines: 'Max. správ na analýzu',
+    analyst_daily_budget_calls: 'Max. volaní za deň', ntfy_server: 'ntfy server', ntfy_topic: 'ntfy téma', notify_on_trade: 'Push pri obchode',
+    backup_enabled: 'Denná záloha', backup_time: 'Čas zálohy', backup_keep: 'Ponechať lokálnych záloh', b2_key_id: 'B2 keyID',
+    b2_app_key: 'B2 applicationKey', b2_bucket: 'B2 bucket', b2_prefix: 'B2 prefix',
+  };
   const GROUPS = [
     ['Agent', ['watchlist', 'cycle_minutes', 'bar_timeframe']],
     ['Riziko', ['risk_per_trade_pct', 'max_position_pct', 'max_positions', 'daily_loss_limit_pct', 'atr_stop_mult', 'reward_risk', 'flatten_before_close_min', 'no_entry_first_min', 'no_entry_after_close_min', 'respect_pdt']],
@@ -253,7 +267,7 @@
       else if (key === 'bar_timeframe') input = el('select', { id }, ...['1Min', '5Min', '15Min', '30Min', '1Hour'].map(v => el('option', { value: v, selected: m.value === v }, v)));
       else input = el('input', { id, value: String(m.value), inputmode: m.kind === 'float' || m.kind === 'int' ? 'decimal' : 'text' });
       inputs[key] = input;
-      return el('label', { class: 'f', for: id }, el('span', {}, key.replaceAll('_', ' '), m.source === 'db' ? el('span', { class: 'chip', style: { 'margin-left': '6px' } }, 'z appky') : null), input, el('small', {}, m.desc));
+      return el('label', { class: 'f', for: id }, el('span', {}, LABEL[key] || key, m.source === 'db' ? el('span', { class: 'chip', style: { 'margin-left': '6px' } }, 'z appky') : null), input, el('small', {}, m.desc));
     }
     async function save() {
       const values = {};

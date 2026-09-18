@@ -30,7 +30,8 @@ h2 { font-size: 1.15rem; }
 .desk-nav a.active { background: var(--bg); font-weight: 600; }
 .top-right { margin-left: auto; display: flex; align-items: center; gap: 8px; }
 
-.main { max-width: 980px; margin: 0 auto; padding: 16px; display: grid; gap: 14px; }
+.main { max-width: 980px; margin: 0 auto; padding: 16px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; }
+.main > * { min-width: 0; }
 .grid2 { display: grid; grid-template-columns: 1fr; gap: 14px; }
 @media (min-width: 760px) { .grid2 { grid-template-columns: minmax(0,1fr) minmax(0,1fr); } .desk-nav { display: flex; } .tabbar { display: none; }
   body { padding-bottom: 24px; } }
@@ -64,9 +65,10 @@ h2 { font-size: 1.15rem; }
 table { width: 100%; border-collapse: collapse; font-size: .92rem; }
 th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
 th { color: var(--muted); font-weight: 600; font-size: .78rem; text-transform: uppercase; letter-spacing: .04em; }
+td.time { white-space: nowrap; }
 td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .table-wrap { overflow-x: auto; margin: 0 -16px; padding: 0 16px; }
-.chip { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: .75rem; font-weight: 600; background: var(--bg); border: 1px solid var(--line); }
+.chip { display: inline-block; white-space: nowrap; padding: 2px 8px; border-radius: 999px; font-size: .75rem; font-weight: 600; background: var(--bg); border: 1px solid var(--line); }
 .chip.buy { color: var(--up); border-color: var(--up); } .chip.sell { color: var(--down); border-color: var(--down); }
 .chip.skip { color: var(--warn); border-color: var(--warn); }
 .chip.flatten { color: var(--down); }
@@ -111,3 +113,7 @@ input[type=checkbox] { appearance: auto; width: 20px; height: 20px; accent-color
 .login-card label { display: grid; gap: 4px; margin: 12px 0; font-size: .9rem; }
 .login-card .btn { width: 100%; margin-top: 8px; }
 .decision-reason { font-size: .85rem; color: var(--muted); }
+
+/* poradie záleží: tieto pravidlá musia byť za definíciou .tabbar / .agent-lbl */
+@media (min-width: 760px) { .tabbar { display: none; } }
+@media (max-width: 559px) { .agent-lbl { display: none; } }

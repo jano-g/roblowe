@@ -69,10 +69,6 @@ def overview(request: Request):
         step = len(curve) / 300
         curve = [curve[int(i * step)] for i in range(300)] + [curve[-1]]
     days = db.rows("SELECT * FROM days ORDER BY date DESC LIMIT 30")
-    day_pnl = []
-    for d in days:
-        last = db.row("SELECT equity FROM equity WHERE at LIKE ? ORDER BY at DESC LIMIT 1", (d["date"][:4] + "%",))
-        day_pnl.append(d)
     trades = db.row("SELECT COUNT(*) n, SUM(kind='entry') entries FROM orders WHERE status NOT IN ('rejected')")
     return {"account": acct, "positions": positions, "error": err, "curve": curve, "days": days, "trades": trades,
             "market_note": scheduler.engine.market_note if scheduler.engine else ""}
