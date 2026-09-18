@@ -1,0 +1,10 @@
+.git
+.venv
+data
+tests
+screenshots
+docs
+*.md
+.env
+.env.example
+__pycache__

@@ -1,0 +1,233 @@
+"""JSON API pre SPA. Zápisy: CSRF hlavička (middleware), current_user, db.tx, log_history."""
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+
+from fastapi import APIRouter, Request
+
+from .. import auth, config, db, settings
+from ..scheduler import scheduler
+from ..services import backup, ntfy
+
+router = APIRouter()
+
+
+class ApiError(Exception):
+    def __init__(self, message: str, status: int = 400):
+        self.message = message
+        self.status = status
+
+
+def _user(request: Request) -> dict:
+    u = auth.current_user(request)
+    if not u:
+        raise ApiError("Neprihlásený", 401)
+    return u
+
+
+def _clock() -> dict:
+    try:
+        c = scheduler.broker.clock()
+        return {"is_open": c.is_open, "next_open": c.next_open.isoformat(), "next_close": c.next_close.isoformat()}
+    except Exception as e:  # noqa: BLE001
+        return {"is_open": None, "error": f"Broker nedostupný: {e.__class__.__name__}"}
+
+
+@router.get("/me")
+def me(request: Request):
+    u = _user(request)
+    today = datetime.now(config.MARKET_TZ).strftime("%Y-%m-%d")
+    day = db.row("SELECT * FROM days WHERE date=?", (today,))
+    return {
+        "user": u["username"], "mode": config.TRADING_MODE, "app": config.APP_NAME,
+        "agent_enabled": settings.get("agent_enabled"),
+        "analyst": bool(scheduler.engine and scheduler.engine.analyst),
+        "broker": scheduler.broker.__class__.__name__ if scheduler.broker else None,
+        "last_cycle_at": scheduler.last_cycle_at.isoformat() if scheduler.last_cycle_at else None,
+        "last_error": scheduler.last_error,
+        "day": day, "clock": _clock(),
+        "now": datetime.now(config.TZ).isoformat(),
+        "last_report": scheduler.engine.last_report.as_dict() if scheduler.engine and scheduler.engine.last_report else None,
+    }
+
+
+@router.get("/overview")
+def overview(request: Request):
+    _user(request)
+    try:
+        a = scheduler.broker.account()
+        acct = {"equity": a.equity, "cash": a.cash, "buying_power": a.buying_power, "daytrade_count": a.daytrade_count,
+                "pattern_day_trader": a.pattern_day_trader, "trading_blocked": a.trading_blocked}
+        positions = [p.__dict__ for p in scheduler.broker.positions()]
+        err = None
+    except Exception as e:  # noqa: BLE001
+        acct, positions, err = None, [], f"Broker nedostupný: {e.__class__.__name__}"
+    since = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+    curve = db.rows("SELECT at, equity FROM equity WHERE at >= ? ORDER BY at", (since,))
+    # zriedenie krivky na max ~300 bodov
+    if len(curve) > 300:
+        step = len(curve) / 300
+        curve = [curve[int(i * step)] for i in range(300)] + [curve[-1]]
+    days = db.rows("SELECT * FROM days ORDER BY date DESC LIMIT 30")
+    day_pnl = []
+    for d in days:
+        last = db.row("SELECT equity FROM equity WHERE at LIKE ? ORDER BY at DESC LIMIT 1", (d["date"][:4] + "%",))
+        day_pnl.append(d)
+    trades = db.row("SELECT COUNT(*) n, SUM(kind='entry') entries FROM orders WHERE status NOT IN ('rejected')")
+    return {"account": acct, "positions": positions, "error": err, "curve": curve, "days": days, "trades": trades,
+            "market_note": scheduler.engine.market_note if scheduler.engine else ""}
+
+
+@router.get("/decisions")
+def decisions(request: Request, limit: int = 100, symbol: str | None = None, action: str | None = None):
+    _user(request)
+    limit = max(1, min(limit, 500))
+    sql, params = "SELECT * FROM decisions WHERE 1=1", []
+    if symbol:
+        sql += " AND symbol=?"
+        params.append(symbol.upper()[:10])
+    if action in ("buy", "sell", "hold", "skip"):
+        sql += " AND action=?"
+        params.append(action)
+    sql += " ORDER BY id DESC LIMIT ?"
+    params.append(limit)
+    return {"items": db.rows(sql, tuple(params))}
+
+
+@router.get("/orders")
+def orders(request: Request, limit: int = 100):
+    _user(request)
+    return {"items": db.rows("SELECT * FROM orders ORDER BY id DESC LIMIT ?", (max(1, min(limit, 500)),))}
+
+
+@router.get("/analyses")
+def analyses(request: Request, limit: int = 20):
+    _user(request)
+    return {"items": db.rows("SELECT id, at, model, input_tokens, output_tokens, headlines, result FROM analyses "
+                             "ORDER BY id DESC LIMIT ?", (max(1, min(limit, 100)),))}
+
+
+@router.get("/history")
+def history(request: Request, limit: int = 100):
+    _user(request)
+    return {"items": db.rows("SELECT * FROM history ORDER BY id DESC LIMIT ?", (max(1, min(limit, 500)),))}
+
+
+@router.get("/settings")
+def get_settings(request: Request):
+    _user(request)
+    return {"settings": settings.public_view(), "mode": config.TRADING_MODE,
+            "analyst_key_set": bool(config.ANTHROPIC_API_KEY), "alpaca_key_set": bool(config.ALPACA_KEY_ID)}
+
+
+@router.put("/settings")
+async def put_settings(request: Request):
+    u = _user(request)
+    body = await request.json()
+    if not isinstance(body, dict):
+        raise ApiError("Neplatné telo požiadavky")
+    values = body.get("values") or {}
+    clear = body.get("_clear") or []
+    if not isinstance(values, dict) or not isinstance(clear, list):
+        raise ApiError("Neplatné telo požiadavky")
+    try:
+        settings.set_many(values, [str(k) for k in clear], u["username"])
+    except ValueError as e:
+        raise ApiError(str(e))
+    if any(k.startswith("analyst_") for k in values):
+        scheduler.reload_analyst()
+    return {"ok": True, "settings": settings.public_view()}
+
+
+@router.post("/agent/toggle")
+async def agent_toggle(request: Request):
+    u = _user(request)
+    body = await request.json()
+    enabled = bool(body.get("enabled"))
+    if enabled and config.TRADING_MODE == "live" and body.get("confirm") != "LIVE":
+        raise ApiError("Zapnutie v live režime vyžaduje potvrdenie textom LIVE.")
+    settings.set_many({"agent_enabled": "1" if enabled else "0"}, [], u["username"])
+    ntfy.notify("Roblowe", "Agent zapnutý." if enabled else "Agent vypnutý.")
+    return {"ok": True, "agent_enabled": enabled}
+
+
+@router.post("/agent/cycle")
+def agent_cycle(request: Request):
+    u = _user(request)
+    if not scheduler.engine:
+        raise ApiError("Agent ešte nebeží", 503)
+    rep = scheduler.run_cycle_now()
+    db.log_history(u["username"], "manual_cycle", {"status": rep["status"]})
+    return {"ok": True, "report": rep}
+
+
+@router.post("/agent/panic")
+async def agent_panic(request: Request):
+    u = _user(request)
+    body = await request.json()
+    if body.get("confirm") != "STOP":
+        raise ApiError("Potvrď textom STOP.")
+    n = scheduler.engine.panic(u["username"])
+    ntfy.notify("Roblowe: STOP", f"Ručne zatvorené {n} pozícií, agent vypnutý.")
+    return {"ok": True, "closed": n}
+
+
+@router.post("/positions/{symbol}/close")
+def close_position(request: Request, symbol: str):
+    u = _user(request)
+    symbol = symbol.upper()[:10]
+    pos = next((p for p in scheduler.broker.positions() if p.symbol == symbol), None)
+    if not pos:
+        raise ApiError("Pozícia neexistuje", 404)
+    o = scheduler.engine.close(pos, f"ručne ({u['username']})")
+    db.log_history(u["username"], "manual_close", {"symbol": symbol})
+    return {"ok": True, "order": o}
+
+
+@router.post("/password")
+async def change_password(request: Request):
+    u = _user(request)
+    body = await request.json()
+    old, new = str(body.get("old", "")), str(body.get("new", ""))
+    if not auth.login(u["username"], old):
+        raise ApiError("Staré heslo nesedí.")
+    if len(new) < 8:
+        raise ApiError("Nové heslo musí mať aspoň 8 znakov.")
+    auth.set_password(u["username"], new)
+    return {"ok": True}
+
+
+@router.post("/notify/test")
+async def notify_test(request: Request):
+    _user(request)
+    body = await request.json()
+    ok, msg = ntfy.test(str(body.get("server") or settings.get("ntfy_server")),
+                        str(body.get("topic") or settings.get("ntfy_topic")))
+    if not ok:
+        raise ApiError(msg)
+    return {"ok": True, "message": msg}
+
+
+@router.get("/backups")
+def backups(request: Request):
+    _user(request)
+    return {"items": backup.list_local()}
+
+
+@router.post("/backups")
+def backup_now(request: Request):
+    u = _user(request)
+    res = backup.run_backup("manual")
+    db.log_history(u["username"], "manual_backup", res)
+    if res["error"]:
+        return {"ok": True, "result": res, "warning": res["error"]}
+    return {"ok": True, "result": res}
+
+
+@router.post("/backups/test-b2")
+def backups_test(request: Request):
+    _user(request)
+    ok, msg = backup.test_b2()
+    if not ok:
+        raise ApiError(msg)
+    return {"ok": True, "message": msg}

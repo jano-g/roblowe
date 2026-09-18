@@ -1,0 +1,23 @@
+services:
+  roblowe:
+    build: .
+    container_name: roblowe
+    restart: unless-stopped
+    env_file: .env
+    # nginx na hostiteľovi posiela roblowe.gordulic.sk -> 127.0.0.1:8120. Nikdy nepublikuj na 0.0.0.0.
+    ports:
+      - "${APP_BIND:-127.0.0.1}:${APP_PORT:-8120}:8000"
+    volumes:
+      - roblowe_data:/data
+    environment:
+      - TZ=Europe/Bratislava
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 256m
+    pids_limit: 128
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+volumes:
+  roblowe_data:

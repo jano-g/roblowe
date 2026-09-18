@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="sk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>{{ app_name }}</title>
+<meta name="theme-color" content="#0f1115">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/static/img/icon.svg">
+<link rel="icon" href="/static/img/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/css/app.css?v={{ v }}">
+</head>
+<body data-mode="{{ mode }}" data-user="{{ user.username }}">
+<header class="top">
+  <div class="brand"><img src="/static/img/icon.svg" alt="" width="28" height="28"><span>{{ app_name }}</span>
+    <span class="mode mode-{{ mode }}" id="modeBadge">{{ mode }}</span></div>
+  <nav class="desk-nav" id="deskNav"></nav>
+  <div class="top-right" id="topRight"></div>
+</header>
+<main id="main" class="main"><div class="skeleton"></div></main>
+<nav class="tabbar" id="tabbar"></nav>
+<div id="toast" class="toast" hidden></div>
+<div id="sheet" class="sheet-wrap" hidden></div>
+<form id="logoutForm" method="post" action="/logout" hidden></form>
+<script src="/static/js/app.js?v={{ v }}"></script>
+</body>
+</html>

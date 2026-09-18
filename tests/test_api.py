@@ -1,0 +1,70 @@
+def test_unauthenticated_redirects_and_401(client):
+    r = client.get("/", follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"].startswith("/login")
+    assert client.get("/api/me").status_code == 401
+    assert client.get("/healthz").json()["ok"] is True
+    assert client.get("/docs", follow_redirects=False).status_code == 303  # docs vypnuté a za gate-om
+
+
+def test_login_bad_password_and_throttle(client):
+    for _ in range(6):
+        r = client.post("/login", data={"username": "jano", "password": "zle"}, follow_redirects=False)
+        assert r.status_code == 401
+    r = client.post("/login", data={"username": "jano", "password": "heslo-heslo-123"}, follow_redirects=False)
+    assert r.status_code == 429
+
+
+def test_open_redirect_guard(logged):
+    r = logged.post("/login", data={"username": "jano", "password": "heslo-heslo-123", "next": "//evil.com"},
+                    follow_redirects=False)
+    assert r.headers["location"] == "/"
+
+
+def test_csrf_header_required(logged):
+    del logged.headers["X-Requested-With"]
+    assert logged.put("/api/settings", json={"values": {}}).status_code == 403
+    logged.headers["X-Requested-With"] = "roblowe"
+    assert logged.put("/api/settings", json={"values": {}}).status_code == 200
+
+
+def test_settings_roundtrip_secret_hidden(logged):
+    r = logged.put("/api/settings", json={"values": {"watchlist": "spy, aapl", "b2_app_key": "tajne", "risk_per_trade_pct": "0.25"}})
+    assert r.status_code == 200
+    s = r.json()["settings"]
+    assert s["watchlist"]["value"] == "SPY,AAPL"
+    assert s["b2_app_key"] == {"kind": "secret", "desc": s["b2_app_key"]["desc"], "source": "db", "set": True}
+    assert "tajne" not in r.text
+    r = logged.put("/api/settings", json={"values": {"watchlist": "in valid"}})
+    assert r.status_code == 400 and "ticker" in r.json()["error"].lower()
+    r = logged.put("/api/settings", json={"values": {"risk_per_trade_pct": "nan"}})
+    assert r.status_code == 400
+
+
+def test_overview_and_me(logged):
+    me = logged.get("/api/me").json()
+    assert me["user"] == "jano" and me["mode"] == "dry"
+    ov = logged.get("/api/overview").json()
+    assert ov["account"]["equity"] > 0
+    assert logged.get("/api/decisions").status_code == 200
+
+
+def test_panic_requires_confirmation(logged):
+    assert logged.post("/api/agent/panic", json={"confirm": "no"}).status_code == 400
+    r = logged.post("/api/agent/panic", json={"confirm": "STOP"})
+    assert r.status_code == 200 and r.json()["ok"]
+
+
+def test_security_headers(logged):
+    r = logged.get("/")
+    assert "script-src 'self'" in r.headers["content-security-policy"]
+    assert r.headers["x-frame-options"] == "DENY"
+    assert r.headers["cache-control"] == "no-cache"
+
+
+def test_password_change_invalidates_session(logged):
+    r = logged.post("/api/password", json={"old": "heslo-heslo-123", "new": "nove-heslo-456"})
+    assert r.status_code == 200
+    assert logged.get("/api/me").status_code == 401
+    r = logged.post("/login", data={"username": "jano", "password": "nove-heslo-456"}, follow_redirects=False)
+    assert r.status_code == 303
+    logged.post("/api/password", json={"old": "nove-heslo-456", "new": "heslo-heslo-123"})

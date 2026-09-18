@@ -1,0 +1,383 @@
+"""Rozhodovací cyklus agenta. Poradie je zámerné a nemenné:
+1. stav účtu a dňa → 2. bezpečnostné brzdy (denná strata, zatvorenie pred koncom seansy)
+→ 3. signály (technika + správy) → 4. výstupy → 5. vstupy cez risk.position_size.
+Model (Claude) nikdy neposiela objednávky – iba dodáva skóre do kroku 3."""
+from __future__ import annotations
+
+import json
+import logging
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+from typing import Callable
+
+from .. import config, db, settings
+from ..broker.base import Broker, NewsItem, Position
+from . import risk, signals
+from .analyst import Analysis, ClaudeAnalyst, SymbolView, parse_analysis
+
+log = logging.getLogger("roblowe.engine")
+
+NEWS_TTL = timedelta(hours=4)
+NEWS_LOOKBACK = timedelta(hours=3)
+
+
+@dataclass
+class CycleReport:
+    status: str
+    at: str = ""
+    equity: float = 0.0
+    day_pnl_pct: float = 0.0
+    decisions: list[dict] = field(default_factory=list)
+    orders: list[dict] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
+    market_note: str = ""
+
+    def as_dict(self) -> dict:
+        return self.__dict__
+
+
+class Engine:
+    def __init__(self, broker: Broker, analyst: ClaudeAnalyst | None = None, mode: str = "dry",
+                 notify: Callable[[str, str], None] | None = None, now: Callable[[], datetime] | None = None):
+        self.broker = broker
+        self.analyst = analyst
+        self.mode = mode
+        self.notify = notify or (lambda title, msg: None)
+        self._now = now or (lambda: datetime.now(timezone.utc))
+        self.news_views: dict[str, SymbolView] = {}
+        self.market_note = ""
+        self.last_report: CycleReport | None = None
+        self._load_recent_analysis()
+
+    # -- pomocné -------------------------------------------------------------------
+    def _load_recent_analysis(self) -> None:
+        row = db.row("SELECT at, model, result FROM analyses ORDER BY id DESC LIMIT 1")
+        if not row:
+            return
+        at = datetime.fromisoformat(row["at"])
+        if self._now() - at > NEWS_TTL:
+            return
+        try:
+            a = parse_analysis(json.loads(row["result"]), model=row["model"], at=at)
+        except (json.JSONDecodeError, TypeError):
+            return
+        self.news_views = a.symbols
+        self.market_note = a.market_note
+
+    @staticmethod
+    def trading_date(now: datetime) -> str:
+        return now.astimezone(config.MARKET_TZ).strftime("%Y-%m-%d")
+
+    def _ensure_day(self, date: str, equity: float) -> dict:
+        day = db.row("SELECT * FROM days WHERE date=?", (date,))
+        if day:
+            return day
+        with db.tx():
+            db.run("INSERT INTO days(date, start_equity, created_at) VALUES (?,?,?)", (date, equity, db.now_iso()))
+            db.log_history("agent", "day_started", {"date": date, "start_equity": equity})
+        return db.row("SELECT * FROM days WHERE date=?", (date,))
+
+    def _decide(self, symbol: str, action: str, reason: str, *, price=None, tech=None, news=None, score=None,
+                details=None) -> dict:
+        d = {
+            "at": db.now_iso(), "symbol": symbol, "price": price,
+            "tech_score": tech.score if tech else None,
+            "news_score": news.sentiment if news else None,
+            "news_confidence": news.confidence if news else None,
+            "score": score, "action": action, "reason": reason,
+            "details": json.dumps(details, ensure_ascii=False) if details else None,
+        }
+        db.run(
+            "INSERT INTO decisions(at,symbol,price,tech_score,news_score,news_confidence,score,action,reason,details) "
+            "VALUES (:at,:symbol,:price,:tech_score,:news_score,:news_confidence,:score,:action,:reason,:details)", d)
+        return d
+
+    def _order(self, symbol: str, side: str, qty: float, kind: str, *, price=None, stop=None, tp=None,
+               broker_id=None, status="submitted", note=None) -> dict:
+        o = {"at": db.now_iso(), "mode": self.mode, "broker_id": broker_id, "symbol": symbol, "side": side, "qty": qty,
+             "kind": kind, "price": price, "stop_price": stop, "take_profit": tp, "status": status, "note": note}
+        db.run("INSERT INTO orders(at,mode,broker_id,symbol,side,qty,kind,price,stop_price,take_profit,status,note) "
+               "VALUES (:at,:mode,:broker_id,:symbol,:side,:qty,:kind,:price,:stop_price,:take_profit,:status,:note)", o)
+        return o
+
+    def _live(self) -> bool:
+        return self.mode in ("paper", "live")
+
+    # -- akcie -------------------------------------------------------------------------
+    def flatten_all(self, reason: str, positions: list[Position]) -> list[dict]:
+        out = []
+        if self._live():
+            try:
+                self.broker.close_all()
+            except Exception as e:  # noqa: BLE001
+                log.exception("close_all zlyhalo")
+                self.notify("Roblowe: CHYBA", f"Zatvorenie pozícií zlyhalo: {e}")
+        for p in positions:
+            out.append(self._order(p.symbol, "sell", p.qty, "flatten", price=p.current_price,
+                                   status="submitted" if self._live() else "dry", note=reason))
+        if positions:
+            self.notify("Roblowe: zatváram všetko", f"{reason} · {len(positions)} pozícií")
+        return out
+
+    def close(self, p: Position, reason: str) -> dict:
+        broker_id, status = None, "dry"
+        if self._live():
+            try:
+                r = self.broker.close_position(p.symbol)
+                broker_id, status = r.broker_id, r.status
+            except Exception as e:  # noqa: BLE001
+                log.exception("close_position zlyhalo")
+                status = "rejected"
+                reason = f"{reason} · CHYBA: {e}"
+        o = self._order(p.symbol, "sell", p.qty, "exit", price=p.current_price, broker_id=broker_id, status=status,
+                        note=reason)
+        if settings.get("notify_on_trade"):
+            self.notify(f"Roblowe: predaj {p.symbol}", f"{p.qty:g} ks @ {p.current_price:.2f} · P/L {p.unrealized_pl:+.0f} USD · {reason}")
+        return o
+
+    def enter(self, symbol: str, sizing: risk.Sizing, price: float, reason: str) -> dict:
+        broker_id, status = None, "dry"
+        if self._live():
+            try:
+                r = self.broker.submit_bracket_buy(symbol, sizing.qty, sizing.stop_price, sizing.take_profit)
+                broker_id, status = r.broker_id, r.status
+            except Exception as e:  # noqa: BLE001
+                log.exception("submit_bracket_buy zlyhalo")
+                status = "rejected"
+                reason = f"{reason} · CHYBA: {e}"
+        o = self._order(symbol, "buy", sizing.qty, "entry", price=price, stop=sizing.stop_price, tp=sizing.take_profit,
+                        broker_id=broker_id, status=status, note=reason)
+        if settings.get("notify_on_trade"):
+            self.notify(f"Roblowe: kúpa {symbol}", f"{sizing.qty} ks @ {price:.2f} · stop {sizing.stop_price:.2f} · cieľ {sizing.take_profit:.2f} · {reason}")
+        return o
+
+    # -- správy ----------------------------------------------------------------------
+    def refresh_news(self, watchlist: list[str], tech: dict[str, signals.Tech | None], now: datetime) -> None:
+        # expirácia starých pohľadov
+        self.news_views = {s: v for s, v in self.news_views.items() if now - v.at <= NEWS_TTL}
+        if not self.analyst:
+            return
+        today = self.trading_date(now)
+        calls_today = db.q1("SELECT COUNT(*) c FROM analyses WHERE at >= ?", (now.astimezone(config.MARKET_TZ)
+                            .replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc).isoformat(),))["c"]
+        if calls_today >= settings.get("analyst_daily_budget_calls"):
+            return
+        try:
+            items = self.broker.news(watchlist, now - NEWS_LOOKBACK, settings.get("analyst_max_headlines"))
+        except Exception as e:  # noqa: BLE001
+            log.warning("news zlyhalo: %s", e)
+            return
+        fresh: list[NewsItem] = []
+        for n in items:
+            if not db.q1("SELECT 1 FROM news_seen WHERE id=?", (n.id,)):
+                fresh.append(n)
+        if not fresh:
+            return
+        ctx = {}
+        for s, t in tech.items():
+            if t:
+                ctx[s] = f"cena {t.price:.2f}, RSI {t.rsi:.0f}, {', '.join(t.notes)}" if t.rsi is not None else f"cena {t.price:.2f}"
+        analysis: Analysis | None = self.analyst.analyze(fresh, ctx, watchlist)
+        with db.tx():
+            for n in fresh:
+                db.run("INSERT OR IGNORE INTO news_seen(id, at) VALUES (?,?)", (n.id, n.at.isoformat()))
+            if analysis:
+                db.run("INSERT INTO analyses(at, model, input_tokens, output_tokens, headlines, result) VALUES (?,?,?,?,?,?)",
+                       (db.now_iso(), analysis.model, analysis.input_tokens, analysis.output_tokens, analysis.headlines,
+                        json.dumps(analysis.raw, ensure_ascii=False)))
+        if analysis:
+            for s, v in analysis.symbols.items():
+                if s in watchlist:
+                    self.news_views[s] = v
+            self.market_note = analysis.market_note
+            log.info("Claude analýza: %d správ, %d tickerov, %s", len(fresh), len(analysis.symbols), analysis.market_note)
+
+    def combined_score(self, tech: signals.Tech, news: SymbolView | None) -> tuple[float, SymbolView | None]:
+        tw, nw = settings.get("tech_weight"), settings.get("news_weight")
+        valid = news if (news and not news.stale and news.confidence >= settings.get("news_min_confidence")) else None
+        if valid:
+            score = tw * tech.score + nw * valid.sentiment
+        else:
+            score = tech.score * (tw + nw * 0.5)
+        return round(max(-1.0, min(1.0, score)), 3), valid
+
+    # -- hlavný cyklus ---------------------------------------------------------------------
+    def cycle(self) -> CycleReport:
+        now = self._now()
+        rep = CycleReport(status="ok", at=now.isoformat())
+        clock = self.broker.clock()
+        if not clock.is_open:
+            rep.status = "closed"
+            rep.notes.append(f"Burza zatvorená, otvára {clock.next_open.astimezone(config.TZ):%d.%m. %H:%M}")
+            self.last_report = rep
+            return rep
+
+        acct = self.broker.account()
+        positions = self.broker.positions()
+        held = {p.symbol: p for p in positions}
+        date = self.trading_date(clock.now)
+        day = self._ensure_day(date, acct.equity)
+        db.run("INSERT INTO equity(at, equity, cash) VALUES (?,?,?)", (db.now_iso(), acct.equity, acct.cash))
+        rep.equity = acct.equity
+        hit, pnl_pct = risk.daily_loss_hit(day["start_equity"], acct.equity, settings.get("daily_loss_limit_pct"))
+        rep.day_pnl_pct = round(pnl_pct, 2)
+
+        if acct.trading_blocked:
+            rep.status = "blocked"
+            rep.notes.append("Broker blokuje obchodovanie na účte.")
+            self.last_report = rep
+            return rep
+
+        mins_to_close = (clock.next_close - clock.now).total_seconds() / 60
+        mins_since_open = (clock.now - (clock.next_close - timedelta(hours=6, minutes=30))).total_seconds() / 60
+
+        # 2a) zatvorenie pred koncom seansy – vždy, aj keď je deň zastavený
+        if mins_to_close <= settings.get("flatten_before_close_min"):
+            if not day["flattened"]:
+                rep.orders += self.flatten_all("koniec seansy", positions)
+                if self._live():
+                    try:
+                        self.broker.cancel_all_orders()
+                    except Exception:  # noqa: BLE001
+                        log.exception("cancel_all_orders zlyhalo")
+                with db.tx():
+                    db.run("UPDATE days SET flattened=1 WHERE date=?", (date,))
+            rep.status = "flattened"
+            self.last_report = rep
+            return rep
+
+        # 2b) denná strata → zastav deň
+        if hit and not day["halted"]:
+            reason = f"denná strata {pnl_pct:.2f} % prekročila limit {settings.get('daily_loss_limit_pct')} %"
+            with db.tx():
+                db.run("UPDATE days SET halted=1, halt_reason=? WHERE date=?", (reason, date))
+                db.log_history("agent", "day_halted", {"date": date, "reason": reason})
+            rep.orders += self.flatten_all(reason, positions)
+            self.notify("Roblowe: STOP na dnes", reason)
+            rep.status = "halted"
+            rep.notes.append(reason)
+            self.last_report = rep
+            return rep
+        if day["halted"]:
+            rep.status = "halted"
+            rep.notes.append(day["halt_reason"] or "deň zastavený")
+            self.last_report = rep
+            return rep
+
+        # 3) signály
+        watchlist = settings.get("watchlist")
+        symbols = sorted(set(watchlist) | set(held))
+        try:
+            bars = self.broker.bars(symbols, settings.get("bar_timeframe"), 120)
+        except Exception as e:  # noqa: BLE001
+            log.warning("bars zlyhalo: %s", e)
+            rep.status = "error"
+            rep.notes.append(f"Dáta z burzy nedostupné: {e}")
+            self.last_report = rep
+            return rep
+        tech = {s: signals.analyze(bars.get(s, [])) for s in symbols}
+        self.refresh_news(watchlist, tech, now)
+        rep.market_note = self.market_note
+
+        open_syms = {o.get("symbol") for o in (self.broker.open_orders() if self._live() else [])}
+        entries = 0
+        pdt_block = risk.pdt_blocks_entry(acct.equity, acct.daytrade_count, settings.get("respect_pdt"))
+        entry_window = (mins_since_open >= settings.get("no_entry_first_min")
+                        and mins_to_close > settings.get("no_entry_after_close_min"))
+        cash_left = acct.cash
+
+        for s in symbols:
+            t = tech.get(s)
+            p = held.get(s)
+            if not t:
+                if p:
+                    rep.decisions.append(self._decide(s, "hold", "málo dát, držím", price=p.current_price))
+                continue
+            news = self.news_views.get(s)
+            score, valid_news = self.combined_score(t, news)
+            det = {"tech": t.notes, "rsi": t.rsi, "atr": t.atr, "vwap": t.vwap,
+                   "news": (valid_news.catalyst if valid_news else None)}
+
+            # 4) výstupy
+            if p:
+                if score <= settings.get("sell_threshold"):
+                    rep.orders.append(self.close(p, f"skóre {score:+.2f} pod hranicou predaja"))
+                    rep.decisions.append(self._decide(s, "sell", "skóre pod hranicou predaja", price=t.price, tech=t,
+                                                      news=valid_news, score=score, details=det))
+                elif valid_news and valid_news.sentiment <= -0.5:
+                    rep.orders.append(self.close(p, f"negatívna správa: {valid_news.catalyst}"))
+                    rep.decisions.append(self._decide(s, "sell", "negatívna správa", price=t.price, tech=t,
+                                                      news=valid_news, score=score, details=det))
+                else:
+                    rep.decisions.append(self._decide(s, "hold", "držím, stop/cieľ u brokera", price=t.price, tech=t,
+                                                      news=valid_news, score=score, details=det))
+                continue
+
+            # 5) vstupy (len sledované tickery)
+            if s not in watchlist:
+                continue
+            if score < settings.get("buy_threshold"):
+                rep.decisions.append(self._decide(s, "hold", "skóre pod hranicou kúpy", price=t.price, tech=t,
+                                                  news=valid_news, score=score, details=det))
+                continue
+            skip = None
+            if not settings.get("agent_enabled"):
+                skip = "agent je vypnutý"
+            elif s in open_syms:
+                skip = "už čaká objednávka"
+            elif not entry_window:
+                skip = "mimo vstupného okna (začiatok/koniec seansy)"
+            elif len(held) + entries >= settings.get("max_positions"):
+                skip = "max. počet pozícií"
+            elif pdt_block:
+                skip = "pravidlo PDT (equity < 25k, 3 day-trady)"
+            elif valid_news and valid_news.sentiment <= -0.3:
+                skip = "správy proti vstupu"
+            elif settings.get("require_news_for_entry") and not (valid_news and valid_news.sentiment > 0.3):
+                skip = "chýba pozitívny katalyzátor v správach"
+            if skip:
+                rep.decisions.append(self._decide(s, "skip", skip, price=t.price, tech=t, news=valid_news, score=score,
+                                                  details=det))
+                continue
+            sizing = risk.position_size(acct.equity, cash_left, t.price, t.atr or 0,
+                                        risk_pct=settings.get("risk_per_trade_pct"),
+                                        max_pos_pct=settings.get("max_position_pct"),
+                                        atr_mult=settings.get("atr_stop_mult"),
+                                        reward_risk=settings.get("reward_risk"))
+            if sizing.qty < 1:
+                rep.decisions.append(self._decide(s, "skip", sizing.reason, price=t.price, tech=t, news=valid_news,
+                                                  score=score, details=det))
+                continue
+            why = f"skóre {score:+.2f}" + (f" · {valid_news.catalyst}" if valid_news else "")
+            o = self.enter(s, sizing, t.price, why)
+            rep.orders.append(o)
+            rep.decisions.append(self._decide(s, "buy", why, price=t.price, tech=t, news=valid_news, score=score,
+                                              details={**det, "sizing": sizing.reason}))
+            if o["status"] != "rejected":
+                entries += 1
+                cash_left -= sizing.qty * t.price
+        self.last_report = rep
+        return rep
+
+    # -- ručné akcie z UI ----------------------------------------------------------------------
+    def panic(self, actor: str) -> int:
+        """Zavri všetko, zruš objednávky, zastav deň a vypni agenta."""
+        positions = self.broker.positions()
+        try:
+            equity = self.broker.account().equity
+        except Exception:  # noqa: BLE001
+            equity = 0.0
+        self.flatten_all(f"ručný STOP ({actor})", positions)
+        if self._live():
+            try:
+                self.broker.cancel_all_orders()
+            except Exception:  # noqa: BLE001
+                log.exception("cancel_all_orders zlyhalo")
+        date = self.trading_date(self._now())
+        with db.tx():
+            db.run("INSERT INTO days(date, start_equity, halted, halt_reason, created_at) VALUES (?,?,1,?,?) "
+                   "ON CONFLICT(date) DO UPDATE SET halted=1, halt_reason=excluded.halt_reason",
+                   (date, equity, f"ručný STOP ({actor})", db.now_iso()))
+            db.log_history(actor, "panic", {"positions": len(positions)})
+        settings.set_many({"agent_enabled": "0"}, [], actor)
+        return len(positions)
