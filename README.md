@@ -38,9 +38,11 @@ ktorý si vieš prečítať v `app/strategy/`.
 |---|---|---|
 | `dry` | Rozhoduje, loguje, na burzu neposiela nič. S Alpaca kľúčmi používa reálne dáta. | prvé dni – sleduj, či dôvody dávajú zmysel |
 | `paper` | Obchoduje na Alpaca paper účte (fiktívnych 100 000 USD). | 4–8 týždňov minimum |
-| `live` | Skutočné peniaze. Vyžaduje `LIVE_CONFIRM=I_UNDERSTAND_THE_RISK` v `.env` a potvrdenie textom LIVE v appke. | až keď paper výsledky presvedčia |
+| `live` | Skutočné peniaze. Prepnutie vyžaduje heslo a napísať LIVE; zapnutie agenta v live režime ďalšie LIVE. | až keď paper výsledky presvedčia |
 
-Režim a API kľúče sa menia **len v `.env` na serveri** – z prehliadača sa zmeniť nedajú.
+Režim a API kľúče (Alpaca paper, Alpaca live, Anthropic) sa nastavujú v appke: **Nastavenia →
+Broker a kľúče**. Každá zmena vyžaduje tvoje heslo, po zmene sa agent vypne a zapneš ho vedome
+znova. Kľúče sa do prehliadača nikdy nevracajú. Bez reštartu kontajnera.
 
 ## Dashboard
 
@@ -48,7 +50,8 @@ Režim a API kľúče sa menia **len v `.env` na serveri** – z prehliadača sa
   tlačidlá *Vyhodnotiť teraz* a **STOP** (zavrie všetko, zruší objednávky, vypne agenta).
 - **Obchody** – objednávky a každé rozhodnutie agenta s dôvodom (aj prečo NEkúpil).
 - **Správy** – analýzy Claude: sentiment, istota, katalyzátor, spotreba tokenov.
-- **Nastavenia** – watchlist, rizikové limity, váhy, notifikácie (ntfy), zálohy (B2), heslo.
+- **Nastavenia** – broker a kľúče (režim dry/paper/live, chránené heslom), watchlist, rizikové
+  limity, váhy, notifikácie (ntfy), zálohy (B2), heslo.
 - Prepínač v hlavičke zapína/vypína agenta. V live režime pýta potvrdenie.
 
 Na mobile: Zdieľať → *Pridať na plochu* (PWA).
@@ -81,6 +84,8 @@ Zlyhanie B2 nikdy nestratí lokálnu kópiu. Nastavenia → Zálohy → *Otestov
   pred koncom seansy“ neprebehne – pozícia môže ostať cez noc. Sleduj ntfy chybové notifikácie.
 - **Syntetické dáta.** Bez Alpaca kľúčov beží FakeBroker s náhodnými cenami – slúži len na
   vyskúšanie UI, nič nehovorí o trhu.
+- **Prístup do dashboardu = prístup k účtu.** Kto sa prihlási, vie prepnúť na live (s heslom).
+  Používaj dlhé heslo a ntfy notifikácie – o každej zmene režimu príde push.
 
 ## Vývoj
 

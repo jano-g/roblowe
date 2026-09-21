@@ -68,3 +68,43 @@ def test_password_change_invalidates_session(logged):
     r = logged.post("/login", data={"username": "jano", "password": "nove-heslo-456"}, follow_redirects=False)
     assert r.status_code == 303
     logged.post("/api/password", json={"old": "nove-heslo-456", "new": "heslo-heslo-123"})
+
+
+def test_broker_keys_not_settable_via_settings(logged):
+    r = logged.put("/api/settings", json={"values": {"trading_mode": "live"}})
+    assert r.status_code == 400 and "Broker" in r.json()["error"]
+
+
+def test_broker_requires_password_and_live_confirmation(logged):
+    r = logged.post("/api/broker", json={"values": {"trading_mode": "paper"}, "password": "zle"})
+    assert r.status_code == 400 and "Heslo" in r.json()["error"]
+    r = logged.post("/api/broker", json={"values": {"trading_mode": "live", "alpaca_live_key_id": "AK1", "alpaca_live_secret": "s"},
+                                         "password": "heslo-heslo-123"})
+    assert r.status_code == 400 and "LIVE" in r.json()["error"]
+    # paper bez kľúčov → ostáva dry
+    r = logged.post("/api/broker", json={"values": {"trading_mode": "paper"}, "password": "heslo-heslo-123"})
+    assert r.status_code == 400 and "dry" in r.json()["error"]
+    assert logged.get("/api/me").json()["mode"] == "dry"
+
+
+def test_broker_switch_disables_agent_and_hides_secrets(logged, monkeypatch):
+    from app.broker.fake import FakeBroker
+    from app import scheduler as sched_mod
+
+    # namiesto skutočnej Alpacy vráť FakeBroker, aby test nešiel na sieť
+    monkeypatch.setattr(sched_mod, "AlpacaBroker", lambda *a, **k: FakeBroker(symbols=["SPY"]))
+    logged.put("/api/settings", json={"values": {"agent_enabled": True}})
+    r = logged.post("/api/broker", json={"values": {"trading_mode": "live", "alpaca_live_key_id": "AKLIVEKEY12345",
+                                                    "alpaca_live_secret": "tajny-secret"},
+                                         "password": "heslo-heslo-123", "confirm": "LIVE"})
+    assert r.status_code == 200, r.text
+    assert r.json()["mode"] == "live"
+    assert "tajny-secret" not in r.text and "AKLIVEKEY12345" not in r.text
+    me = logged.get("/api/me").json()
+    assert me["mode"] == "live" and me["agent_enabled"] is False
+    # zapnutie agenta v live vyžaduje LIVE
+    assert logged.post("/api/agent/toggle", json={"enabled": True}).status_code == 400
+    assert logged.post("/api/agent/toggle", json={"enabled": True, "confirm": "LIVE"}).status_code == 200
+    # späť na dry
+    r = logged.post("/api/broker", json={"values": {"trading_mode": "dry"}, "password": "heslo-heslo-123"})
+    assert r.status_code == 200 and r.json()["mode"] == "dry"

@@ -19,20 +19,12 @@ ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
 ALLOW_OPEN = os.environ.get("ALLOW_OPEN", "") == "1"  # len lokálny vývoj, nikdy na VPS
 
 # Obchodovanie ---------------------------------------------------------------
-# dry   = rozhoduje a loguje, na burzu neposiela nič
-# paper = Alpaca paper účet (fiktívne peniaze)
-# live  = skutočné peniaze; vyžaduje LIVE_CONFIRM=I_UNDERSTAND_THE_RISK
-TRADING_MODE = os.environ.get("TRADING_MODE", "dry").strip().lower()
-LIVE_CONFIRM = os.environ.get("LIVE_CONFIRM", "")
-
-ALPACA_KEY_ID = os.environ.get("ALPACA_KEY_ID", "")
-ALPACA_SECRET_KEY = os.environ.get("ALPACA_SECRET_KEY", "")
+# Režim (dry/paper/live) a API kľúče sa nastavujú v appke (Nastavenia → Broker, vyžaduje heslo).
+# Hodnoty z .env sú len počiatočné; čo je uložené v DB, vyhráva. Pozri settings.OVERRIDABLE.
 ALPACA_PAPER_URL = "https://paper-api.alpaca.markets"
 ALPACA_LIVE_URL = "https://api.alpaca.markets"
 ALPACA_DATA_URL = "https://data.alpaca.markets"
 ALPACA_FEED = os.environ.get("ALPACA_FEED", "iex")  # iex = zadarmo, sip = platený
-
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 
 
 def validate() -> list[str]:
@@ -40,17 +32,13 @@ def validate() -> list[str]:
     errors: list[str] = []
     if not ALLOW_OPEN and len(ADMIN_PASSWORD) < 8:
         errors.append("ADMIN_PASSWORD musí mať aspoň 8 znakov (alebo ALLOW_OPEN=1 len lokálne).")
-    if TRADING_MODE not in ("dry", "paper", "live"):
+    if os.environ.get("TRADING_MODE", "dry").strip().lower() not in ("dry", "paper", "live"):
         errors.append("TRADING_MODE musí byť dry, paper alebo live.")
-    if TRADING_MODE == "live" and LIVE_CONFIRM != "I_UNDERSTAND_THE_RISK":
-        errors.append("TRADING_MODE=live vyžaduje LIVE_CONFIRM=I_UNDERSTAND_THE_RISK.")
-    if TRADING_MODE in ("paper", "live") and not (ALPACA_KEY_ID and ALPACA_SECRET_KEY):
-        errors.append("TRADING_MODE=paper/live vyžaduje ALPACA_KEY_ID a ALPACA_SECRET_KEY.")
     return errors
 
 
-def alpaca_trading_url() -> str:
-    return ALPACA_LIVE_URL if TRADING_MODE == "live" else ALPACA_PAPER_URL
+def alpaca_trading_url(mode: str) -> str:
+    return ALPACA_LIVE_URL if mode == "live" else ALPACA_PAPER_URL
 
 
 _secret: str | None = None

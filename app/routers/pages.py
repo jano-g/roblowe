@@ -5,14 +5,15 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 
 from .. import auth, config, db
+from ..scheduler import scheduler
 
 router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
-ASSET_VERSION = "3"
+ASSET_VERSION = "4"
 
 
 def _ctx(request: Request, **kw):
-    return {"request": request, "app_name": config.APP_NAME, "mode": config.TRADING_MODE, "v": ASSET_VERSION, **kw}
+    return {"request": request, "app_name": config.APP_NAME, "mode": scheduler.mode, "v": ASSET_VERSION, **kw}
 
 
 @router.get("/", response_class=HTMLResponse)

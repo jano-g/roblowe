@@ -162,6 +162,7 @@ def parse_analysis(data: dict, *, model: str, headlines: int = 0, input_tokens: 
 def make_analyst() -> ClaudeAnalyst | None:
     from .. import settings
 
-    if not settings.get("analyst_enabled") or not config.ANTHROPIC_API_KEY:
+    key = settings.get("anthropic_api_key")
+    if not settings.get("analyst_enabled") or not key:
         return None
-    return ClaudeAnalyst(config.ANTHROPIC_API_KEY, settings.get("analyst_model"), settings.get("analyst_effort"))
+    return ClaudeAnalyst(key, settings.get("analyst_model"), settings.get("analyst_effort"))

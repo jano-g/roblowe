@@ -10,9 +10,8 @@ os.environ["DATA_DIR"] = _tmp
 os.environ["ADMIN_USERNAME"] = "jano"
 os.environ["ADMIN_PASSWORD"] = "heslo-heslo-123"
 os.environ["TRADING_MODE"] = "dry"
-os.environ.pop("ALPACA_KEY_ID", None)
-os.environ.pop("ALPACA_SECRET_KEY", None)
-os.environ.pop("ANTHROPIC_API_KEY", None)
+for k in ("ALPACA_PAPER_KEY_ID", "ALPACA_PAPER_SECRET_KEY", "ALPACA_LIVE_KEY_ID", "ALPACA_LIVE_SECRET_KEY", "ANTHROPIC_API_KEY"):
+    os.environ.pop(k, None)
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app import auth, db, settings  # noqa: E402

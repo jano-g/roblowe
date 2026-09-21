@@ -2,7 +2,7 @@
 (() => {
   'use strict';
   const $ = (s, r = document) => r.querySelector(s);
-  const MODE = document.body.dataset.mode;
+  let MODE = document.body.dataset.mode;
 
   // -- DOM helpers ------------------------------------------------------------
   function el(tag, attrs = {}, ...children) {
@@ -89,7 +89,9 @@
   let me = null;
   async function loadMe() {
     me = await api('/me');
-    const badge = $('#modeBadge'); badge.textContent = me.mode;
+    MODE = me.mode;
+    const badge = $('#modeBadge'); badge.textContent = me.mode; badge.className = 'mode mode-' + me.mode;
+    document.body.dataset.mode = me.mode;
     const sw = el('button', { class: 'switch', role: 'switch', 'aria-checked': String(me.agent_enabled), title: 'Agent zapnutý/vypnutý',
       onclick: toggleAgent });
     mount($('#topRight'), el('span', { class: 'muted agent-lbl', style: { 'font-size': '.85rem' } }, me.agent_enabled ? 'Agent beží' : 'Agent vypnutý'), sw,
@@ -221,7 +223,7 @@
     mount(root, el('div', { class: 'skeleton' }));
     const a = await api('/analyses?limit=20');
     mount(root,
-      !me.analyst ? el('div', { class: 'banner warn' }, 'Analytik (Claude) je vypnutý alebo chýba ANTHROPIC_API_KEY – agent beží len na technických signáloch.') : null,
+      !me.analyst ? el('div', { class: 'banner warn' }, 'Analytik (Claude) je vypnutý alebo chýba Anthropic API kľúč (Nastavenia → Broker) – agent beží len na technických signáloch.') : null,
       a.items.length ? a.items.map(x => { let r = {}; try { r = JSON.parse(x.result); } catch {}
         return el('div', { class: 'card' }, el('h2', {}, fmtTime(x.at), el('span', { class: 'chip' }, `${x.headlines} správ · ${x.model} · ${(x.input_tokens || 0) + (x.output_tokens || 0)} tok.`)),
           el('p', { class: 'muted' }, r.market_note || ''),
@@ -274,12 +276,50 @@
       for (const [k, inp] of Object.entries(inputs)) values[k] = inp.type === 'checkbox' ? inp.checked : inp.value;
       try { await api('/settings', { method: 'PUT', body: { values } }); toast('Nastavenia uložené.'); route(); } catch (e) { toast(e.message, true); }
     }
+    // --- Broker: režim + kľúče, chránené heslom ---
+    const B = S;
+    const modeSel = el('select', {}, ...['dry', 'paper', 'live'].map(v => el('option', { value: v, selected: s.wanted_mode === v }, v === 'dry' ? 'dry – len loguje, nič neposiela' : v === 'paper' ? 'paper – fiktívne peniaze (Alpaca paper)' : 'live – SKUTOČNÉ peniaze')));
+    const bIn = {
+      alpaca_paper_key_id: el('input', { placeholder: B.alpaca_paper_key_id.set ? `uložené (${B.alpaca_paper_key_id.value}), prázdne = nemeniť` : 'PK…', autocomplete: 'off' }),
+      alpaca_paper_secret: el('input', { type: 'password', placeholder: B.alpaca_paper_secret.set ? '•••••• (uložené, prázdne = nemeniť)' : 'nenastavené', autocomplete: 'new-password' }),
+      alpaca_live_key_id: el('input', { placeholder: B.alpaca_live_key_id.set ? `uložené (${B.alpaca_live_key_id.value}), prázdne = nemeniť` : 'AK…', autocomplete: 'off' }),
+      alpaca_live_secret: el('input', { type: 'password', placeholder: B.alpaca_live_secret.set ? '•••••• (uložené, prázdne = nemeniť)' : 'nenastavené', autocomplete: 'new-password' }),
+      anthropic_api_key: el('input', { type: 'password', placeholder: B.anthropic_api_key.set ? '•••••• (uložené, prázdne = nemeniť)' : 'sk-ant-…', autocomplete: 'new-password' }),
+    };
+    const bPw = el('input', { type: 'password', autocomplete: 'current-password', placeholder: 'Tvoje heslo do appky' });
+    async function saveBroker() {
+      const values = { trading_mode: modeSel.value };
+      for (const [k, inp] of Object.entries(bIn)) if (inp.value.trim()) values[k] = inp.value.trim();
+      if (!bPw.value) { toast('Zadaj heslo.', true); return; }
+      let confirm = null;
+      if (modeSel.value === 'live') {
+        const ok = await confirmSheet('Prepnúť na LIVE', 'Agent bude po zapnutí obchodovať so skutočnými peniazmi na tvojom Alpaca účte. Napíš LIVE.', { danger: true, typed: 'LIVE', ok: 'Prepnúť na live' });
+        if (!ok) return;
+        confirm = 'LIVE';
+      }
+      try {
+        const r = await api('/broker', { method: 'POST', body: { values, password: bPw.value, confirm } });
+        toast(`Režim ${r.mode}, účet: ${fmtUsd(r.account.equity)}. Agent je vypnutý – zapni ho v hlavičke.`);
+        await loadMe(); route();
+      } catch (e) { toast(e.message, true); await loadMe(); route(); }
+    }
+    const brokerCard = el('div', { class: 'card' }, el('h2', {}, 'Broker a kľúče', el('strong', { class: 'mode mode-' + s.mode }, s.mode)),
+      el('p', { class: 'note' }, `Beží: ${s.broker === 'FakeBroker' ? 'FakeBroker (syntetické dáta – chýbajú Alpaca kľúče)' : 'Alpaca'} · paper kľúče: ${s.alpaca_paper_set ? 'nastavené' : 'chýbajú'} · live kľúče: ${s.alpaca_live_set ? 'nastavené' : 'chýbajú'} · Claude kľúč: ${s.analyst_key_set ? 'nastavený' : 'chýba'}`),
+      el('div', { class: 'fields' },
+        el('label', { class: 'f' }, 'Režim obchodovania', modeSel, el('small', {}, 'dry nič neposiela; paper a live posielajú objednávky na príslušný Alpaca účet.')),
+        el('label', { class: 'f' }, 'Anthropic API kľúč', bIn.anthropic_api_key, el('small', {}, 'Claude analytik správ. Prázdne = len technické signály.')),
+        el('label', { class: 'f' }, 'Alpaca paper Key ID', bIn.alpaca_paper_key_id, el('small', {}, 'Alpaca → Paper Trading → API Keys.')),
+        el('label', { class: 'f' }, 'Alpaca paper Secret', bIn.alpaca_paper_secret),
+        el('label', { class: 'f' }, 'Alpaca live Key ID', bIn.alpaca_live_key_id, el('small', {}, 'Iné kľúče než paper! Alpaca → Live Trading → API Keys.')),
+        el('label', { class: 'f' }, 'Alpaca live Secret', bIn.alpaca_live_secret),
+        el('label', { class: 'f' }, 'Potvrď heslom', bPw, el('small', {}, 'Zmena režimu alebo kľúčov vyžaduje heslo. Po zmene sa agent vypne, zapneš ho vedome znova.'))),
+      el('div', { class: 'row', style: { 'justify-content': 'flex-end' } }, el('button', { class: 'btn ' + (modeSel.value === 'live' ? 'danger' : 'primary'), onclick: saveBroker }, 'Uložiť broker a kľúče')));
+    modeSel.addEventListener('change', () => { brokerCard.querySelector('.row .btn').className = 'btn ' + (modeSel.value === 'live' ? 'danger' : 'primary'); });
+
     const pwOld = el('input', { type: 'password', autocomplete: 'current-password', placeholder: 'Staré heslo' });
     const pwNew = el('input', { type: 'password', autocomplete: 'new-password', placeholder: 'Nové heslo (aspoň 8 znakov)' });
     mount(root,
-      el('div', { class: 'card' }, el('h2', {}, 'Stav'),
-        el('p', {}, `Režim: `, el('strong', { class: 'mode mode-' + s.mode }, s.mode), ` · Alpaca kľúče: ${s.alpaca_key_set ? 'nastavené' : 'chýbajú'} · Claude kľúč: ${s.analyst_key_set ? 'nastavený' : 'chýba'}`),
-        el('p', { class: 'note' }, 'Režim a API kľúče sa menia len v .env na serveri (a reštart kontajnera) – zámerne, aby sa nedali zmeniť z prehliadača.')),
+      brokerCard,
       ...GROUPS.map(([title, keys]) => el('div', { class: 'card' }, el('h2', {}, title), el('div', { class: 'fields' }, keys.map(field)),
         title === 'Notifikácie' ? el('button', { class: 'btn small', onclick: async () => { try { const r = await api('/notify/test', { method: 'POST', body: { server: inputs.ntfy_server.value, topic: inputs.ntfy_topic.value } }); toast(r.message); } catch (e) { toast(e.message, true); } } }, 'Poslať skúšobnú notifikáciu') : null,
         title === 'Zálohy' ? el('div', { class: 'row' },

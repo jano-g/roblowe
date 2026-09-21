@@ -3,7 +3,8 @@
 Automatický intradenný obchodný agent (US akcie cez Alpaca) s dashboardom na roblowe.gordulic.sk.
 Každých N minút počas otvorenej burzy: technické skóre zo sviečok + skóre zo správ (Claude) →
 tvrdé rizikové mantinely (`app/strategy/risk.py`) → bracket objednávky (stop-loss + take-profit).
-Žiadne pozície cez noc. Režimy `dry` / `paper` / `live` sa menia LEN v `.env`.
+Žiadne pozície cez noc. Režim `dry` / `paper` / `live` a API kľúče sa menia v appke
+(Nastavenia → Broker, `POST /api/broker`: heslo + pri live napísané LIVE; agent sa po zmene vypne).
 
 > Infra a deploy: picus `PICUS.md`. Kroky deployu: `DEPLOY.md`. Používateľský návod: `README.md`.
 
@@ -18,7 +19,10 @@ tvrdé rizikové mantinely (`app/strategy/risk.py`) → bracket objednávky (sto
 - Stratégia: `signals.py` (EMA/RSI/ATR/VWAP → skóre), `analyst.py` (Claude, štruktúrovaný JSON),
   `risk.py` (sizing, denná strata, PDT), `engine.py` (poradie krokov je zámerné a nemenné).
 - `.env` je základ, `settings.OVERRIDABLE` sa dá prepísať v Nastaveniach (DB vyhráva); tajomstvá
-  (`SECRET_KEYS`) sa nikdy nevracajú do prehliadača. Režim a API kľúče sú len v `.env` (zámerne).
+  (`SECRET_KEYS`) sa nikdy nevracajú do prehliadača. `settings.BROKER_KEYS` (režim, Alpaca paper/live
+  kľúče, Anthropic kľúč) idú len cez `/api/broker` (heslo), nie cez `PUT /api/settings`.
+  `scheduler.rebuild()` vymení brokera a engine bez reštartu; `scheduler.mode` je efektívny režim
+  (bez kľúčov spadne do dry s FakeBroker).
 
 ## Konvencie
 - UI a notifikácie po slovensky, krátke. Wall-clock v `config.TZ`, obchodný deň v `config.MARKET_TZ`

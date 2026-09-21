@@ -9,6 +9,13 @@ from . import db
 
 # key: (ENV meno, default, typ, popis)
 OVERRIDABLE: dict[str, tuple[str, Any, str, str]] = {
+    # Broker (mení sa cez POST /api/broker – vyžaduje heslo; nie cez PUT /api/settings)
+    "trading_mode": ("TRADING_MODE", "dry", "str", "dry = len loguje, paper = fiktívne peniaze, live = skutočné peniaze."),
+    "alpaca_paper_key_id": ("ALPACA_PAPER_KEY_ID", "", "str", "Alpaca paper Key ID."),
+    "alpaca_paper_secret": ("ALPACA_PAPER_SECRET_KEY", "", "secret", "Alpaca paper Secret Key."),
+    "alpaca_live_key_id": ("ALPACA_LIVE_KEY_ID", "", "str", "Alpaca live Key ID (skutočný účet)."),
+    "alpaca_live_secret": ("ALPACA_LIVE_SECRET_KEY", "", "secret", "Alpaca live Secret Key."),
+    "anthropic_api_key": ("ANTHROPIC_API_KEY", "", "secret", "Anthropic API kľúč pre analytika správ."),
     # Agent
     "agent_enabled": ("AGENT_ENABLED", "0", "bool", "Agent obchoduje (hlavný vypínač)."),
     "watchlist": ("WATCHLIST", "SPY,QQQ,AAPL,MSFT,NVDA,AMZN,META,GOOGL,TSLA,AMD", "list", "Sledované tickery."),
@@ -53,6 +60,9 @@ OVERRIDABLE: dict[str, tuple[str, Any, str, str]] = {
 }
 
 SECRET_KEYS = {k for k, v in OVERRIDABLE.items() if v[2] == "secret"}
+BROKER_KEYS = {"trading_mode", "alpaca_paper_key_id", "alpaca_paper_secret", "alpaca_live_key_id",
+               "alpaca_live_secret", "anthropic_api_key"}
+MODES = ("dry", "paper", "live")
 
 _cache: dict[str, str] | None = None
 
@@ -137,6 +147,10 @@ def validate(key: str, value: Any) -> str:
             assert 0 <= int(hh) < 24 and 0 <= int(mm) < 60
         except (ValueError, AssertionError):
             raise ValueError("Čas zálohy musí byť HH:MM.")
+    if key == "trading_mode" and s.lower() not in MODES:
+        raise ValueError("Režim musí byť dry, paper alebo live.")
+    if key == "trading_mode":
+        return s.lower()
     if key == "analyst_effort" and s not in ("low", "medium", "high"):
         raise ValueError("Hĺbka uvažovania: low, medium alebo high.")
     if key == "bar_timeframe" and s not in ("1Min", "5Min", "15Min", "30Min", "1Hour"):
@@ -144,8 +158,23 @@ def validate(key: str, value: Any) -> str:
     return s
 
 
-def set_many(values: dict[str, Any], clear: list[str], actor: str) -> None:
+def mode() -> str:
+    m = str(raw("trading_mode")).strip().lower()
+    return m if m in MODES else "dry"
+
+
+def alpaca_creds(m: str | None = None) -> tuple[str, str]:
+    """(key_id, secret) pre daný režim. dry používa paper kľúče (ak sú) na reálne dáta."""
+    m = m or mode()
+    if m == "live":
+        return get("alpaca_live_key_id"), get("alpaca_live_secret")
+    return get("alpaca_paper_key_id"), get("alpaca_paper_secret")
+
+
+def set_many(values: dict[str, Any], clear: list[str], actor: str, allow_broker: bool = False) -> None:
     changes: dict[str, Any] = {}
+    if not allow_broker and (BROKER_KEYS & set(values)) | (BROKER_KEYS & set(clear)):
+        raise ValueError("Režim a API kľúče sa menia v sekcii Broker (vyžaduje heslo).")
     with db.tx():
         for key in clear:
             if key in OVERRIDABLE:
@@ -173,6 +202,10 @@ def public_view() -> dict[str, Any]:
         item: dict[str, Any] = {"kind": kind, "desc": desc, "source": source(key)}
         if kind == "secret":
             item["set"] = bool(raw(key))
+        elif key.endswith("_key_id"):
+            v = str(get(key))
+            item["value"] = (v[:4] + "…" + v[-4:]) if len(v) > 10 else ("…" if v else "")  # len náhľad
+            item["set"] = bool(v)
         else:
             item["value"] = get(key) if kind != "list" else ",".join(get(key))
         out[key] = item

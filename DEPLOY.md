@@ -28,19 +28,16 @@ nano .env
 ```
 V `.env` vyplň aspoň:
 - `APP_URL=https://roblowe.gordulic.sk`
-- `ADMIN_PASSWORD` (aspoň 8 znakov; platí len pri prvom štarte)
+- `ADMIN_PASSWORD` (aspoň 8 znakov, dlhé – kto sa prihlási, vie prepnúť na live; platí len pri prvom štarte)
 - `SECRET_KEY` — `openssl rand -hex 32` (ak necháš prázdne, vygeneruje sa do volume)
-- `TRADING_MODE=dry` na prvý týždeň, potom `paper`
-- `ALPACA_KEY_ID`, `ALPACA_SECRET_KEY` (paper kľúče)
-- `ANTHROPIC_API_KEY`
 - `NTFY_TOPIC`
-- B2 môžeš vyplniť aj neskôr v appke (Nastavenia → Zálohy).
+- Režim, Alpaca a Anthropic kľúče aj B2 nastavíš potom v appke (Nastavenia). Do `.env` ich dávať netreba.
 
 ## 3. Štart
 ```bash
 docker compose up -d --build
 docker logs roblowe --tail 20        # "Roblowe started (režim dry, ...)" + "Uvicorn running"
-curl -s http://127.0.0.1:8120/healthz   # {"ok":true,"mode":"dry"}
+curl -s http://127.0.0.1:8120/healthz   # {"ok":true,"mode":"dry"}   (bez kľúčov beží FakeBroker)
 ```
 Dáta žijú vo volume `roblowe_roblowe_data` (`/data`: `roblowe.db`, `secret.key`, `backups/`).
 
@@ -55,20 +52,25 @@ curl -sI https://roblowe.gordulic.sk/ | head -1     # musí byť 200/303, nie 30
 
 ## 5. Prvé spustenie v prehliadači
 1. Otvor https://roblowe.gordulic.sk, prihlás sa (`ADMIN_USERNAME` / `ADMIN_PASSWORD`).
-2. **Nastavenia → Notifikácie**: téma ntfy → *Poslať skúšobnú notifikáciu*.
-3. **Nastavenia → Zálohy**: B2 keyID/applicationKey/bucket → *Otestovať B2* → *Zálohovať teraz*.
-4. **Nastavenia → Agent**: uprav watchlist (10–15 likvidných tickerov stačí). Rizikové limity
+2. **Nastavenia → Broker a kľúče**: režim `dry`, Anthropic kľúč, Alpaca **paper** Key ID + Secret,
+   tvoje heslo → *Uložiť broker a kľúče*. Toast ukáže equity paper účtu (100 000 USD) – kľúče fungujú.
+3. **Nastavenia → Notifikácie**: téma ntfy → *Poslať skúšobnú notifikáciu*.
+4. **Nastavenia → Zálohy**: B2 keyID/applicationKey/bucket → *Otestovať B2* → *Zálohovať teraz*.
+5. **Nastavenia → Agent**: uprav watchlist (10–15 likvidných tickerov stačí). Rizikové limity
    nechaj defaultné, kým nemáš dáta.
-5. **Prehľad**: *Vyhodnotiť teraz* – počas otvorenej burzy (15:30–22:00 nášho času) uvidíš
+6. **Prehľad**: *Vyhodnotiť teraz* – počas otvorenej burzy (15:30–22:00 nášho času) uvidíš
    rozhodnutia s dôvodmi v záložke Obchody. Mimo seansy uvidíš „Burza zatvorená“.
-6. Prepínač v hlavičke **zapni agenta**. V `dry` režime sa nič neposiela, len sa loguje.
-7. Na mobile: Zdieľať → *Pridať na plochu*.
+7. Prepínač v hlavičke **zapni agenta**. V `dry` režime sa nič neposiela, len sa loguje.
+8. Na mobile: Zdieľať → *Pridať na plochu*.
 
-### Prechod dry → paper → live
-- Po ~týždni v `dry`: `.env` → `TRADING_MODE=paper` → `docker compose up -d`. Sleduj 4–8 týždňov.
-- Live: nový live účet v Alpaca (KYC, vklad), **live kľúče** do `.env`, `TRADING_MODE=live`,
-  `LIVE_CONFIRM=I_UNDERSTAND_THE_RISK`, reštart, potom v appke zapnúť agenta a napísať LIVE.
+### Prechod dry → paper → live (všetko v appke, bez reštartu)
+- Po ~týždni v `dry`: Nastavenia → Broker → režim `paper`, heslo, uložiť. Agent sa vypne, zapni ho
+  prepínačom. Sleduj 4–8 týždňov.
+- Live: v Alpaca dokonči live účet (KYC, W-8BEN, vklad, 1–3 dni), vygeneruj **live kľúče**.
+  Nastavenia → Broker → režim `live`, live Key ID + Secret, heslo → napísať **LIVE**. Skontroluj na
+  Prehľade, že equity sedí s tvojím účtom, potom zapni agenta (znova LIVE).
   Začni sumou, ktorej stratu unesieš. Pod 25 000 USD platí pravidlo PDT (README).
+- Späť: režim `paper` alebo `dry`, heslo, uložiť. Otvorené live pozície predtým zavri (STOP).
 
 ## 6. Aktualizácia
 ```bash
@@ -92,15 +94,16 @@ cd /opt/roblowe && git pull && docker compose up -d --build
 | Logy | `docker logs roblowe --tail 100 -f` |
 | Health | `curl -s http://127.0.0.1:8120/healthz` |
 | Núdzové zatvorenie všetkého | Prehľad → **STOP** (alebo priamo v Alpaca web UI → Close All) |
-| Zmena režimu / kľúčov | `.env` + `docker compose up -d` |
+| Zmena režimu / kľúčov | Nastavenia → Broker a kľúče (heslo), bez reštartu |
 
 ## Troubleshooting
 | Symptóm | Príčina / riešenie |
 |---|---|
 | Kontajner padá s „ADMIN_PASSWORD musí mať aspoň 8 znakov“ | doplň heslo v `.env`, `docker compose up -d` |
-| „TRADING_MODE=paper/live vyžaduje ALPACA_KEY_ID…“ | doplň kľúče (paper vs. live sa líšia!) |
-| Prehľad: „Broker nedostupný“ | zlé kľúče alebo paper kľúče v live režime; `docker logs` ukáže status 401/403 |
-| Záložka Správy: „Analytik vypnutý“ | chýba `ANTHROPIC_API_KEY` alebo `analyst_enabled` vypnuté v Nastaveniach |
+| Broker: „Pre režim paper chýbajú Alpaca paper kľúče – ostávam v dry“ | zadaj Key ID aj Secret pre daný režim (paper vs. live sa líšia!) |
+| Broker: „Uložené, ale broker odmietol kľúče“ / Prehľad „Broker nedostupný“ | preklep v kľúči alebo paper kľúč v live režime; `docker logs` ukáže status 401/403 |
+| Prehľad: „syntetické dáta, bez Alpaca kľúčov“ | Nastavenia → Broker → zadaj paper kľúče |
+| Záložka Správy: „Analytik vypnutý“ | chýba Anthropic kľúč (Nastavenia → Broker) alebo `analyst_enabled` vypnuté |
 | Agent nič nekupuje | pozri Obchody → rozhodnutia „preskočené“ s dôvodom (okno, PDT, max. pozícií, skóre) |
 | Login vždy odmietnutý | heslo z `.env` platí len pri prvom štarte; reset cez `app.cli set-password` |
 | Rate limit blokuje po jednom zlom hesle | nginx musí posielať `X-Forwarded-For $proxy_add_x_forwarded_for` |

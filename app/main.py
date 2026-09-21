@@ -30,9 +30,7 @@ async def lifespan(app: FastAPI):
     db.migrate()
     auth.bootstrap_admin()
     scheduler.start()
-    log.info("%s started (režim %s, admin %s)", config.APP_NAME, config.TRADING_MODE, config.ADMIN_USERNAME)
-    if config.TRADING_MODE == "live":
-        log.warning("!!! LIVE REŽIM – skutočné peniaze !!!")
+    log.info("%s started (režim %s, admin %s)", config.APP_NAME, scheduler.mode, config.ADMIN_USERNAME)
     yield
     scheduler.stop()
 
@@ -92,4 +90,4 @@ async def unhandled(request: Request, exc: Exception):
 
 @app.get("/healthz")
 def healthz():
-    return {"ok": True, "mode": config.TRADING_MODE}
+    return {"ok": True, "mode": scheduler.mode}

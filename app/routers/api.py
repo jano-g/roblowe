@@ -39,7 +39,7 @@ def me(request: Request):
     today = datetime.now(config.MARKET_TZ).strftime("%Y-%m-%d")
     day = db.row("SELECT * FROM days WHERE date=?", (today,))
     return {
-        "user": u["username"], "mode": config.TRADING_MODE, "app": config.APP_NAME,
+        "user": u["username"], "mode": scheduler.mode, "app": config.APP_NAME,
         "agent_enabled": settings.get("agent_enabled"),
         "analyst": bool(scheduler.engine and scheduler.engine.analyst),
         "broker": scheduler.broker.__class__.__name__ if scheduler.broker else None,
@@ -112,8 +112,12 @@ def history(request: Request, limit: int = 100):
 @router.get("/settings")
 def get_settings(request: Request):
     _user(request)
-    return {"settings": settings.public_view(), "mode": config.TRADING_MODE,
-            "analyst_key_set": bool(config.ANTHROPIC_API_KEY), "alpaca_key_set": bool(config.ALPACA_KEY_ID)}
+    paper_id, paper_sec = settings.alpaca_creds("paper")
+    live_id, live_sec = settings.alpaca_creds("live")
+    return {"settings": settings.public_view(), "mode": scheduler.mode, "wanted_mode": settings.mode(),
+            "broker": scheduler.broker.__class__.__name__ if scheduler.broker else None,
+            "analyst_key_set": bool(settings.get("anthropic_api_key")),
+            "alpaca_paper_set": bool(paper_id and paper_sec), "alpaca_live_set": bool(live_id and live_sec)}
 
 
 @router.put("/settings")
@@ -135,12 +139,52 @@ async def put_settings(request: Request):
     return {"ok": True, "settings": settings.public_view()}
 
 
+@router.post("/broker")
+async def put_broker(request: Request):
+    """Režim a API kľúče. Vyžaduje aktuálne heslo; live navyše napísané LIVE.
+    Po zmene sa agent vypne (zapneš ho vedome znova) a broker sa prebuduje bez reštartu."""
+    u = _user(request)
+    body = await request.json()
+    if not isinstance(body, dict):
+        raise ApiError("Neplatné telo požiadavky")
+    if not auth.login(u["username"], str(body.get("password", ""))):
+        raise ApiError("Heslo nesedí.")
+    values = {k: v for k, v in (body.get("values") or {}).items() if k in settings.BROKER_KEYS}
+    clear = [k for k in (body.get("_clear") or []) if k in settings.BROKER_KEYS]
+    new_mode = str(values.get("trading_mode", settings.mode())).lower()
+    if new_mode == "live" and body.get("confirm") != "LIVE":
+        raise ApiError("Prepnutie na live vyžaduje napísať LIVE.")
+    try:
+        settings.set_many(values, clear, u["username"], allow_broker=True)
+    except ValueError as e:
+        raise ApiError(str(e))
+    # kontrola kľúčov pre zvolený režim (po uložení, aby sa dali zadať spolu s režimom)
+    kid, sec = settings.alpaca_creds(new_mode)
+    if new_mode in ("paper", "live") and not (kid and sec):
+        settings.set_many({"trading_mode": "dry"}, [], u["username"], allow_broker=True)
+        scheduler.rebuild()
+        raise ApiError(f"Pre režim {new_mode} chýbajú Alpaca {new_mode} kľúče – ostávam v dry.")
+    old_mode = scheduler.mode
+    settings.set_many({"agent_enabled": "0"}, [], u["username"])
+    scheduler.rebuild()
+    db.log_history(u["username"], "broker_changed", {"mode": scheduler.mode, "ip": auth.client_ip(request)})
+    if scheduler.mode != old_mode or new_mode == "live":
+        ntfy.notify("Roblowe: zmena režimu", f"{old_mode} → {scheduler.mode} (agent vypnutý, zapni ho ručne)", priority=4)
+    # over spojenie s brokerom
+    try:
+        a = scheduler.broker.account()
+        acct = {"equity": a.equity, "cash": a.cash}
+    except Exception as e:  # noqa: BLE001
+        raise ApiError(f"Uložené, ale broker odmietol kľúče ({e.__class__.__name__}). Skontroluj ich.", 502)
+    return {"ok": True, "mode": scheduler.mode, "account": acct, "settings": settings.public_view()}
+
+
 @router.post("/agent/toggle")
 async def agent_toggle(request: Request):
     u = _user(request)
     body = await request.json()
     enabled = bool(body.get("enabled"))
-    if enabled and config.TRADING_MODE == "live" and body.get("confirm") != "LIVE":
+    if enabled and scheduler.mode == "live" and body.get("confirm") != "LIVE":
         raise ApiError("Zapnutie v live režime vyžaduje potvrdenie textom LIVE.")
     settings.set_many({"agent_enabled": "1" if enabled else "0"}, [], u["username"])
     ntfy.notify("Roblowe", "Agent zapnutý." if enabled else "Agent vypnutý.")

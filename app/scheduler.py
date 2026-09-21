@@ -21,13 +21,17 @@ log = logging.getLogger("roblowe.scheduler")
 TICK = 30
 
 
-def build_broker():
-    if config.TRADING_MODE in ("paper", "live") or (config.ALPACA_KEY_ID and config.ALPACA_SECRET_KEY):
-        # dry režim s kľúčmi = skutočné dáta z Alpaca paper, žiadne objednávky
-        return AlpacaBroker(config.ALPACA_KEY_ID, config.ALPACA_SECRET_KEY, config.alpaca_trading_url())
-    fb = FakeBroker(symbols=settings.get("watchlist"))
-    log.warning("Bez ALPACA kľúčov: používam FakeBroker so syntetickými dátami (len na vyskúšanie UI).")
-    return fb
+def build_broker(mode: str):
+    """Vráti (broker, efektívny režim). Bez kľúčov spadne do dry s FakeBroker, nech sa nič neposiela."""
+    key_id, secret = settings.alpaca_creds(mode)
+    if key_id and secret:
+        # dry režim s paper kľúčmi = skutočné dáta z Alpaca, žiadne objednávky
+        return AlpacaBroker(key_id, secret, config.alpaca_trading_url(mode)), mode
+    if mode != "dry":
+        log.error("Režim %s bez Alpaca kľúčov – bežím ako dry s FakeBroker.", mode)
+    else:
+        log.warning("Bez Alpaca kľúčov: používam FakeBroker so syntetickými dátami (len na vyskúšanie UI).")
+    return FakeBroker(symbols=settings.get("watchlist")), "dry"
 
 
 class Scheduler:
@@ -42,10 +46,23 @@ class Scheduler:
         self._thread: threading.Thread | None = None
 
     def start(self) -> None:
-        self.broker = build_broker()
-        self.engine = Engine(self.broker, make_analyst(), config.TRADING_MODE, ntfy.notify)
+        self.rebuild()
         self._thread = threading.Thread(target=self._loop, name="scheduler", daemon=True)
         self._thread.start()
+
+    @property
+    def mode(self) -> str:
+        return self.engine.mode if self.engine else settings.mode()
+
+    def rebuild(self) -> None:
+        """Nový broker + engine podľa aktuálnych nastavení (zmena režimu / kľúčov)."""
+        with self._lock:
+            self.broker, mode = build_broker(settings.mode())
+            self.engine = Engine(self.broker, make_analyst(), mode, ntfy.notify)
+            self.last_error = None
+            log.info("broker %s, režim %s", self.broker.__class__.__name__, mode)
+            if mode == "live":
+                log.warning("!!! LIVE REŽIM – skutočné peniaze !!!")
 
     def stop(self) -> None:
         self._stop.set()
@@ -62,7 +79,7 @@ class Scheduler:
             return rep.as_dict()
 
     def _loop(self) -> None:
-        log.info("scheduler beží (režim %s)", config.TRADING_MODE)
+        log.info("scheduler beží (režim %s)", self.mode)
         while not self._stop.is_set():
             try:
                 self._tick()
