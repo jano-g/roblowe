@@ -302,16 +302,7 @@
         const r = await api('/broker', { method: 'POST', body: { values, password: bPw.value, confirm } });
         toast(`Režim ${r.mode}, účet: ${fmtUsd(r.account.equity)}. Agent je vypnutý – zapni ho v hlavičke.`);
         await loadMe(); route();
-      } catch (e) { toast(e.message, true); }
-    }
-    const testOut = el('p', { class: 'note' });
-    async function testBroker() {
-      const values = { trading_mode: modeSel.value };
-      for (const [k, inp] of Object.entries(bIn)) if (inp.value.trim()) values[k] = inp.value.trim();
-      try {
-        const r = await api('/broker/test', { method: 'POST', body: { values } });
-        mount(testOut, el('span', { class: r.ok ? 'up' : 'down' }, r.message), ` · Key ID ${r.key_id} (${r.key_len} zn., zdroj ${r.source.key_id}), Secret ${r.secret_len} zn. (zdroj ${r.source.secret}) · ${r.url}`);
-      } catch (e) { toast(e.message, true); }
+      } catch (e) { toast(e.message, true); await loadMe(); route(); }
     }
     const brokerCard = el('div', { class: 'card' }, el('h2', {}, 'Broker a kľúče', el('strong', { class: 'mode mode-' + s.mode }, s.mode)),
       el('p', { class: 'note' }, `Beží: ${s.broker === 'FakeBroker' ? 'FakeBroker (syntetické dáta – chýbajú Alpaca kľúče)' : 'Alpaca'} · paper kľúče: ${s.alpaca_paper_set ? 'nastavené' : 'chýbajú'} · live kľúče: ${s.alpaca_live_set ? 'nastavené' : 'chýbajú'} · Claude kľúč: ${s.analyst_key_set ? 'nastavený' : 'chýba'}`),
@@ -323,11 +314,8 @@
         el('label', { class: 'f' }, 'Alpaca live Key ID', bIn.alpaca_live_key_id, el('small', {}, 'Iné kľúče než paper! Alpaca → Live Trading → API Keys.')),
         el('label', { class: 'f' }, 'Alpaca live Secret', bIn.alpaca_live_secret),
         el('label', { class: 'f' }, 'Potvrď heslom', bPw, el('small', {}, 'Zmena režimu alebo kľúčov vyžaduje heslo. Po zmene sa agent vypne, zapneš ho vedome znova.'))),
-      testOut,
-      el('div', { class: 'row', style: { 'justify-content': 'flex-end' } },
-        el('button', { class: 'btn', onclick: testBroker }, 'Otestovať kľúče'),
-        el('button', { class: 'btn ' + (modeSel.value === 'live' ? 'danger' : 'primary'), onclick: saveBroker }, 'Uložiť broker a kľúče')));
-    modeSel.addEventListener('change', () => { brokerCard.querySelector('.row .btn:last-child').className = 'btn ' + (modeSel.value === 'live' ? 'danger' : 'primary'); });
+      el('div', { class: 'row', style: { 'justify-content': 'flex-end' } }, el('button', { class: 'btn ' + (modeSel.value === 'live' ? 'danger' : 'primary'), onclick: saveBroker }, 'Uložiť broker a kľúče')));
+    modeSel.addEventListener('change', () => { brokerCard.querySelector('.row .btn').className = 'btn ' + (modeSel.value === 'live' ? 'danger' : 'primary'); });
 
     const pwOld = el('input', { type: 'password', autocomplete: 'current-password', placeholder: 'Staré heslo' });
     const pwNew = el('input', { type: 'password', autocomplete: 'new-password', placeholder: 'Nové heslo (aspoň 8 znakov)' });

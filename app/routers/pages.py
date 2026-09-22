@@ -9,7 +9,7 @@ from ..scheduler import scheduler
 
 router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
-ASSET_VERSION = "6"
+ASSET_VERSION = "7"
 
 
 def _ctx(request: Request, **kw):

@@ -6,7 +6,6 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Request
 
 from .. import auth, config, db, settings
-from ..broker.alpaca import AlpacaBroker, BrokerError
 from ..scheduler import scheduler
 from ..services import backup, ntfy
 
@@ -140,51 +139,6 @@ async def put_settings(request: Request):
     return {"ok": True, "settings": settings.public_view()}
 
 
-def _mask(v: str) -> str:
-    return (v[:4] + "…" + v[-4:]) if len(v) > 10 else ("…" if v else "(prázdne)")
-
-
-def _probe_alpaca(mode: str, key_id: str, secret: str) -> dict:
-    """Skúsi /v2/account s danými kľúčmi. Vráti popis výsledku, nikdy nevyhodí."""
-    info = {"mode": mode, "key_id": _mask(key_id), "key_len": len(key_id), "secret_len": len(secret),
-            "url": config.alpaca_trading_url(mode), "ok": False, "message": ""}
-    if not (key_id and secret):
-        info["message"] = f"Pre režim {mode} chýba Key ID alebo Secret."
-        return info
-    hint = ""
-    if mode == "paper" and not key_id.startswith("PK"):
-        hint = " Paper Key ID zvyčajne začína na PK – toto vyzerá ako live kľúč."
-    elif mode == "live" and key_id.startswith("PK"):
-        hint = " Live Key ID nezačína na PK – toto vyzerá ako paper kľúč."
-    if key_id != key_id.strip() or secret != secret.strip():
-        hint += " Kľúč obsahuje medzeru alebo koniec riadku na začiatku/konci."
-    try:
-        a = AlpacaBroker(key_id, secret, config.alpaca_trading_url(mode), timeout=10).account()
-        info.update(ok=True, message=f"OK – účet {a.equity:,.0f} USD equity, {a.cash:,.0f} USD hotovosť.".replace(",", " "),
-                    equity=a.equity, cash=a.cash)
-    except BrokerError as e:
-        info["message"] = f"{e}{hint}"
-    return info
-
-
-@router.post("/broker/test")
-async def test_broker(request: Request):
-    """Overí uložené (alebo práve zadané) kľúče pre daný režim bez ukladania."""
-    _user(request)
-    body = await request.json()
-    values = body.get("values") or {}
-    mode = str(values.get("trading_mode") or settings.mode()).lower()
-    if mode not in settings.MODES:
-        raise ApiError("Neplatný režim")
-    kid, sec = settings.alpaca_creds("live" if mode == "live" else "paper")
-    prefix = "alpaca_live" if mode == "live" else "alpaca_paper"
-    kid = str(values.get(f"{prefix}_key_id") or "").strip() or kid
-    sec = str(values.get(f"{prefix}_secret") or "").strip() or sec
-    info = _probe_alpaca("live" if mode == "live" else "paper", kid, sec)
-    info["source"] = {"key_id": settings.source(f"{prefix}_key_id"), "secret": settings.source(f"{prefix}_secret")}
-    return info
-
-
 @router.post("/broker")
 async def put_broker(request: Request):
     """Režim a API kľúče. Vyžaduje aktuálne heslo; live navyše napísané LIVE.
@@ -200,20 +154,16 @@ async def put_broker(request: Request):
     new_mode = str(values.get("trading_mode", settings.mode())).lower()
     if new_mode == "live" and body.get("confirm") != "LIVE":
         raise ApiError("Prepnutie na live vyžaduje napísať LIVE.")
-    values = {k: (v.strip() if isinstance(v, str) else v) for k, v in values.items()}
-    # over kľúče u Alpaca PRED uložením: zadané hodnoty majú prednosť pred uloženými
-    if new_mode in ("paper", "live"):
-        prefix = "alpaca_live" if new_mode == "live" else "alpaca_paper"
-        kid0, sec0 = settings.alpaca_creds(new_mode)
-        kid = str(values.get(f"{prefix}_key_id") or "") or kid0
-        sec = str(values.get(f"{prefix}_secret") or "") or sec0
-        probe = _probe_alpaca(new_mode, kid, sec)
-        if not probe["ok"]:
-            raise ApiError(f"Neuložené. {probe['message']} (Key ID {probe['key_id']})")
     try:
         settings.set_many(values, clear, u["username"], allow_broker=True)
     except ValueError as e:
         raise ApiError(str(e))
+    # kontrola kľúčov pre zvolený režim (po uložení, aby sa dali zadať spolu s režimom)
+    kid, sec = settings.alpaca_creds(new_mode)
+    if new_mode in ("paper", "live") and not (kid and sec):
+        settings.set_many({"trading_mode": "dry"}, [], u["username"], allow_broker=True)
+        scheduler.rebuild()
+        raise ApiError(f"Pre režim {new_mode} chýbajú Alpaca {new_mode} kľúče – ostávam v dry.")
     old_mode = scheduler.mode
     settings.set_many({"agent_enabled": "0"}, [], u["username"])
     scheduler.rebuild()

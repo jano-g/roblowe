@@ -81,29 +81,10 @@ def test_broker_requires_password_and_live_confirmation(logged):
     r = logged.post("/api/broker", json={"values": {"trading_mode": "live", "alpaca_live_key_id": "AK1", "alpaca_live_secret": "s"},
                                          "password": "heslo-heslo-123"})
     assert r.status_code == 400 and "LIVE" in r.json()["error"]
-    # paper bez kľúčov → neuloží sa, ostáva dry
+    # paper bez kľúčov → ostáva dry
     r = logged.post("/api/broker", json={"values": {"trading_mode": "paper"}, "password": "heslo-heslo-123"})
-    assert r.status_code == 400 and "Neuložené" in r.json()["error"]
+    assert r.status_code == 400 and "dry" in r.json()["error"]
     assert logged.get("/api/me").json()["mode"] == "dry"
-
-
-def test_broker_rejects_bad_keys_before_saving(logged, monkeypatch):
-    from app.routers import api as api_mod
-    from app.broker.alpaca import BrokerError
-
-    class Rejecting:
-        def __init__(self, *a, **k): pass
-        def account(self): raise BrokerError("Alpaca odmietla požiadavku (401).")
-    monkeypatch.setattr(api_mod, "AlpacaBroker", Rejecting)
-    r = logged.post("/api/broker", json={"values": {"trading_mode": "paper", "alpaca_paper_key_id": "AKNOTPAPER1234",
-                                                    "alpaca_paper_secret": "x" * 20}, "password": "heslo-heslo-123"})
-    assert r.status_code == 400
-    assert "401" in r.json()["error"] and "PK" in r.json()["error"]
-    s = logged.get("/api/settings").json()
-    assert s["alpaca_paper_set"] is False and s["wanted_mode"] == "dry"
-    t = logged.post("/api/broker/test", json={"values": {"trading_mode": "paper", "alpaca_paper_key_id": " PKABCDEFGH12345 ",
-                                                         "alpaca_paper_secret": "y" * 20}}).json()
-    assert t["ok"] is False and t["key_id"].startswith("PKAB") and "401" in t["message"]
 
 
 def test_broker_switch_disables_agent_and_hides_secrets(logged, monkeypatch):
@@ -111,9 +92,7 @@ def test_broker_switch_disables_agent_and_hides_secrets(logged, monkeypatch):
     from app import scheduler as sched_mod
 
     # namiesto skutočnej Alpacy vráť FakeBroker, aby test nešiel na sieť
-    from app.routers import api as api_mod
     monkeypatch.setattr(sched_mod, "AlpacaBroker", lambda *a, **k: FakeBroker(symbols=["SPY"]))
-    monkeypatch.setattr(api_mod, "AlpacaBroker", lambda *a, **k: FakeBroker(symbols=["SPY"]))
     logged.put("/api/settings", json={"values": {"agent_enabled": True}})
     r = logged.post("/api/broker", json={"values": {"trading_mode": "live", "alpaca_live_key_id": "AKLIVEKEY12345",
                                                     "alpaca_live_secret": "tajny-secret"},
