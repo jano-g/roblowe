@@ -26,6 +26,9 @@ def build_broker(mode: str):
     key_id, secret = settings.alpaca_creds(mode)
     if key_id and secret:
         # dry režim s paper kľúčmi = skutočné dáta z Alpaca, žiadne objednávky
+        prefix = "alpaca_live" if mode == "live" else "alpaca_paper"
+        log.info("Alpaca kľúče: %s… (zdroj key %s / secret %s) → %s", key_id[:4],
+                 settings.source(f"{prefix}_key_id"), settings.source(f"{prefix}_secret"), config.alpaca_trading_url(mode))
         return AlpacaBroker(key_id, secret, config.alpaca_trading_url(mode)), mode
     if mode != "dry":
         log.error("Režim %s bez Alpaca kľúčov – bežím ako dry s FakeBroker.", mode)
