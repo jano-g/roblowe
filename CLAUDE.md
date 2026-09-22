@@ -32,7 +32,8 @@ tvrdé rizikové mantinely (`app/strategy/risk.py`) → bracket objednávky (sto
 - Claude nikdy neposiela objednávky. Dodáva `SymbolView` (sentiment, istota, katalyzátor) a engine
   ho použije len cez `combined_score()` a vetá. Zmena váh/hraníc = Nastavenia, nie kód.
 - Nová funkcia = API + UI + test (`tests/`, `pytest`). Engine testuj cez `FakeBroker`.
-- Commit a push po každej ucelenej zmene.
+- Commit a push po každej ucelenej zmene **rovno do `main`** (žiadne feature vetvy ani PR, kým Jano
+  výslovne nepovie „sprav vetvu“). VPS ťahá `main`: `git pull && docker compose up -d --build`.
 
 ## Lokálny vývoj
 ```bash
