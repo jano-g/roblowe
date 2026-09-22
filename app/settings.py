@@ -79,18 +79,27 @@ def invalidate() -> None:
     _cache = None
 
 
+# staré názvy v .env z prvej verzie (ALPACA_KEY_ID / ALPACA_SECRET_KEY = paper kľúče)
+LEGACY_ENV = {"alpaca_paper_key_id": "ALPACA_KEY_ID", "alpaca_paper_secret": "ALPACA_SECRET_KEY"}
+
+
 def raw(key: str) -> str:
     env, default, _, _ = OVERRIDABLE[key]
     v = _load().get(key)
     if v is not None:
         return v
-    return os.environ.get(env, default)
+    v = os.environ.get(env)
+    if v is None and key in LEGACY_ENV:
+        v = os.environ.get(LEGACY_ENV[key])
+    return default if v is None else v
 
 
 def source(key: str) -> str:
     if key in _load():
         return "db"
-    return "env" if os.environ.get(OVERRIDABLE[key][0]) is not None else "default"
+    if os.environ.get(OVERRIDABLE[key][0]) is not None or os.environ.get(LEGACY_ENV.get(key, ""), None) is not None:
+        return "env"
+    return "default"
 
 
 def get(key: str) -> Any:

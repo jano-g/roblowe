@@ -108,3 +108,12 @@ def test_broker_switch_disables_agent_and_hides_secrets(logged, monkeypatch):
     # späť na dry
     r = logged.post("/api/broker", json={"values": {"trading_mode": "dry"}, "password": "heslo-heslo-123"})
     assert r.status_code == 200 and r.json()["mode"] == "dry"
+
+
+def test_legacy_env_alpaca_keys_are_paper_keys(monkeypatch):
+    from app import settings as st
+    monkeypatch.setenv("ALPACA_KEY_ID", "PKLEGACY")
+    monkeypatch.setenv("ALPACA_SECRET_KEY", "legacy-secret")
+    st.invalidate()
+    assert st.alpaca_creds("paper") == ("PKLEGACY", "legacy-secret")
+    assert st.alpaca_creds("live") == ("", "")
