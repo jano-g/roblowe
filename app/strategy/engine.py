@@ -221,7 +221,15 @@ class Engine:
         positions = self.broker.positions()
         held = {p.symbol: p for p in positions}
         date = self.trading_date(clock.now)
-        day = self._ensure_day(date, acct.equity)
+        # Základ dňa = equity pri zatvorení predošlého dňa podľa brokera (Alpaca last_equity).
+        # Bez neho (FakeBroker) equity z prvého cyklu dňa.
+        base = acct.last_equity if acct.last_equity > 0 else acct.equity
+        day = self._ensure_day(date, base)
+        if acct.last_equity > 0 and abs(day["start_equity"] - acct.last_equity) > 0.01:
+            with db.tx():
+                db.run("UPDATE days SET start_equity=? WHERE date=?", (acct.last_equity, date))
+                db.log_history("agent", "day_start_synced", {"date": date, "old": day["start_equity"], "new": acct.last_equity})
+            day["start_equity"] = acct.last_equity
         db.run("INSERT INTO equity(at, equity, cash) VALUES (?,?,?)", (self._ts(), acct.equity, acct.cash))
         rep.equity = acct.equity
         hit, pnl_pct = risk.daily_loss_hit(day["start_equity"], acct.equity, settings.get("daily_loss_limit_pct"))
@@ -236,20 +244,37 @@ class Engine:
         mins_to_close = (clock.next_close - clock.now).total_seconds() / 60
         mins_since_open = (clock.now - (clock.next_close - timedelta(hours=6, minutes=30))).total_seconds() / 60
 
-        # 2a) zatvorenie pred koncom seansy – vždy, aj keď je deň zastavený
+        # 2a) zatvorenie pred koncom seansy – vždy, aj keď je deň zastavený. Opakuje sa každý cyklus,
+        #     kým broker hlási otvorené pozície (príznak flattened nikdy nič nepreskočí).
         if mins_to_close <= settings.get("flatten_before_close_min"):
-            if not day["flattened"]:
+            if positions:
                 rep.orders += self.flatten_all("koniec seansy", positions)
-                if self._live():
-                    try:
-                        self.broker.cancel_all_orders()
-                    except Exception:  # noqa: BLE001
-                        log.exception("cancel_all_orders zlyhalo")
+            left = self.broker.positions() if (positions and self._live()) else []
+            if left:
+                rep.notes.append(f"Stále otvorené: {', '.join(p.symbol for p in left)} – skúsim znova v ďalšom cykle.")
+                self.notify("Roblowe: CHYBA", f"Pozície sa nepodarilo zavrieť pred koncom seansy: "
+                            f"{', '.join(p.symbol for p in left)}. Skontroluj Alpaca.")
+            elif not day["flattened"]:
                 with db.tx():
                     db.run("UPDATE days SET flattened=1 WHERE date=?", (date,))
             rep.status = "flattened"
             self.last_report = rep
             return rep
+
+        # 2a') zostatky z predošlých dní (napr. zlyhané zatvorenie): bracket nohy s time_in_force=day
+        #      už expirovali, pozícia je bez stop-lossu → zavri ju hneď po otvorení.
+        if self._live() and positions:
+            d0 = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=config.MARKET_TZ).astimezone(timezone.utc).isoformat()
+            today_entries = {r["symbol"] for r in db.q(
+                "SELECT symbol FROM orders WHERE kind='entry' AND status!='rejected' AND at >= ?", (d0,))}
+            for p in list(positions):
+                if p.symbol not in today_entries:
+                    rep.orders.append(self.close(p, "zostatok z predošlého dňa bez stop-lossu"))
+                    rep.decisions.append(self._decide(p.symbol, "sell", "zostatok z predošlého dňa bez stop-lossu",
+                                                      price=p.current_price))
+                    self.notify("Roblowe: zatváram zostatok", f"{p.symbol} {p.qty:g} ks ostal otvorený z predošlého dňa.")
+                    held.pop(p.symbol, None)
+            positions = [p for p in positions if p.symbol in held]
 
         # 2b) denná strata → zastav deň
         if hit and not day["halted"]:
@@ -264,6 +289,8 @@ class Engine:
             self.last_report = rep
             return rep
         if day["halted"]:
+            if positions:  # zastavený deň nesmie držať pozície – dokončí zatváranie, ak predtým zlyhalo
+                rep.orders += self.flatten_all(day["halt_reason"] or "deň zastavený", positions)
             rep.status = "halted"
             rep.notes.append(day["halt_reason"] or "deň zastavený")
             self.last_report = rep

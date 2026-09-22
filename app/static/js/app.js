@@ -140,7 +140,8 @@
     mount(root, el('div', { class: 'skeleton' }));
     const ov = await api('/overview');
     const a = ov.account; const d = me.day;
-    const dayPnl = a && d && d.start_equity ? (a.equity / d.start_equity - 1) * 100 : null;
+    const dayBase = a && a.last_equity > 0 ? a.last_equity : (d && d.start_equity);
+    const dayPnl = a && dayBase ? (a.equity / dayBase - 1) * 100 : null;
     const banner = MODE === 'live' ? el('div', { class: 'banner live' }, 'LIVE režim – agent obchoduje so skutočnými peniazmi.')
       : MODE === 'dry' ? el('div', { class: 'banner warn' }, `Režim DRY – agent len rozhoduje a loguje, na burzu nič neposiela${me.broker === 'FakeBroker' ? ' (syntetické dáta, bez Alpaca kľúčov)' : ''}.`) : null;
     mount(root,

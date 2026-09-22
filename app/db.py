@@ -97,6 +97,11 @@ MIGRATIONS: list[str] = [
     """
     ALTER TABLE days ADD COLUMN summary_sent INTEGER NOT NULL DEFAULT 0;
     """,
+    # 3 – body krivky zo syntetického FakeBrokera (bežal, kým appka nenašla Alpaca kľúče)
+    """
+    DELETE FROM equity WHERE equity = 100000.0 AND cash = 100000.0
+      AND at > (SELECT MIN(at) FROM equity WHERE equity != 100000.0);
+    """,
 ]
 
 

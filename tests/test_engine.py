@@ -183,3 +183,41 @@ def test_notify_mode_trade_sends_per_trade():
     fb.set_bars("AAA", trend_bars(0.4))
     eng.cycle()
     assert any("kúpa AAA" in t for t in sent)
+
+
+def test_day_base_is_broker_last_equity_and_syncs():
+    fb, eng = make_engine()
+    # deň založený skôr so zlým základom (napr. zo syntetických dát)
+    db.run("INSERT INTO days(date, start_equity, created_at) VALUES ('2026-09-18', 100000, 'x')")
+    fb._cash = 100_763
+    fb.last_equity = 100_960  # včerajšie zatvorenie
+    fb.set_bars("AAA", trend_bars(-0.1))
+    rep = eng.cycle()
+    assert db.row("SELECT start_equity FROM days")["start_equity"] == 100_960
+    assert rep.day_pnl_pct == round((100_763 / 100_960 - 1) * 100, 2)  # −0,20 %, nie +0,76 %
+
+
+def test_flatten_retries_until_positions_closed():
+    fb, eng = make_engine()
+    fb.set_bars("AAA", trend_bars(0.4))
+    eng.cycle()
+    assert len(fb.positions()) == 1
+    fb.clock = lambda: type("C", (), {"is_open": True, "now": NOW, "next_open": NOW + timedelta(days=1),
+                                       "next_close": NOW + timedelta(minutes=8)})()
+    fb.fail_close = 1
+    rep = eng.cycle()
+    assert len(fb.positions()) == 1 and "Stále otvorené" in rep.notes[0]
+    assert db.row("SELECT flattened FROM days")["flattened"] == 0
+    eng.cycle()  # ďalší cyklus to dokončí
+    assert fb.positions() == []
+    assert db.row("SELECT flattened FROM days")["flattened"] == 1
+
+
+def test_leftover_position_from_previous_day_is_closed():
+    from app.broker.base import Position
+    fb, eng = make_engine()
+    fb.set_bars("OLD", trend_bars(0.4))
+    fb._pos["OLD"] = Position("OLD", 10, 120, 130, 1300, 100, 0.08)
+    eng.cycle()
+    assert "OLD" not in {p.symbol for p in fb.positions()}
+    assert "zostatok" in db.row("SELECT reason FROM decisions WHERE symbol='OLD' AND action='sell'")["reason"]

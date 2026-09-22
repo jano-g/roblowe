@@ -3,6 +3,7 @@ kontajner ostal ľahký. Dokumentácia: https://docs.alpaca.markets/reference"""
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime, timezone
 
 import httpx
@@ -59,6 +60,7 @@ class AlpacaBroker:
             pattern_day_trader=bool(a.get("pattern_day_trader")),
             trading_blocked=bool(a.get("trading_blocked") or a.get("account_blocked")),
             currency=a.get("currency", "USD"),
+            last_equity=float(a.get("last_equity") or 0),
         )
 
     def positions(self) -> list[Position]:
@@ -134,18 +136,36 @@ class AlpacaBroker:
                            filled_avg_price=float(o["filled_avg_price"]) if o.get("filled_avg_price") else None)
 
     def close_position(self, symbol: str) -> OrderResult:
-        # Najprv zruš bracket „nohy“ (TP/SL), inak Alpaca odmietne uzavretie pre held qty.
+        # Najprv zruš bracket „nohy“ (TP/SL), inak Alpaca odmietne uzavretie pre held qty
+        # („insufficient qty available“). Rušenie je asynchrónne – chvíľu počkaj, kým zmiznú.
         for od in self.open_orders():
             if od.get("symbol") == symbol:
                 try:
                     self._call(self._t, "DELETE", f"/v2/orders/{od['id']}")
                 except BrokerError:
                     pass
+        for _ in range(6):
+            if not any(od.get("symbol") == symbol for od in self.open_orders()):
+                break
+            time.sleep(0.5)
         o = self._call(self._t, "DELETE", f"/v2/positions/{symbol}")
         return OrderResult(broker_id=(o or {}).get("id", ""), status=(o or {}).get("status", "accepted"))
 
     def close_all(self) -> None:
-        self._call(self._t, "DELETE", "/v2/positions", params={"cancel_orders": "true"})
+        """Zruší všetky objednávky a zavrie každú pozíciu zvlášť. Hromadné DELETE /v2/positions
+        vracia 207 a pri ešte nezrušených bracket nohách jednotlivé pozície potichu odmietne."""
+        try:
+            self.cancel_all_orders()
+        except BrokerError:
+            pass
+        errors = []
+        for p in self.positions():
+            try:
+                self.close_position(p.symbol)
+            except BrokerError as e:
+                errors.append(f"{p.symbol}: {e}")
+        if errors:
+            raise BrokerError("; ".join(errors))
 
     def cancel_all_orders(self) -> None:
         self._call(self._t, "DELETE", "/v2/orders")

@@ -56,7 +56,8 @@ def overview(request: Request):
     _user(request)
     try:
         a = scheduler.broker.account()
-        acct = {"equity": a.equity, "cash": a.cash, "buying_power": a.buying_power, "daytrade_count": a.daytrade_count,
+        acct = {"equity": a.equity, "cash": a.cash, "last_equity": a.last_equity, "buying_power": a.buying_power,
+                "daytrade_count": a.daytrade_count,
                 "pattern_day_trader": a.pattern_day_trader, "trading_blocked": a.trading_blocked}
         positions = [p.__dict__ for p in scheduler.broker.positions()]
         err = None

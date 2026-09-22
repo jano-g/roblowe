@@ -23,6 +23,8 @@ class FakeBroker:
         self.submitted: list[dict] = []
         self.news_items: list[NewsItem] = []
         self.daytrade_count = 0
+        self.last_equity = 0.0
+        self.fail_close = 0  # koľkokrát má close_position zlyhať (test opakovania)
         for s in symbols or []:
             self.seed_symbol(s)
 
@@ -60,7 +62,7 @@ class FakeBroker:
     def account(self) -> Account:
         mv = sum(p.market_value for p in self._pos.values())
         return Account(equity=self._cash + mv, cash=self._cash, buying_power=self._cash * 2,
-                       daytrade_count=self.daytrade_count)
+                       daytrade_count=self.daytrade_count, last_equity=self.last_equity)
 
     def positions(self) -> list[Position]:
         return list(self._pos.values())
@@ -94,6 +96,9 @@ class FakeBroker:
         return OrderResult(broker_id=oid, status="filled", filled_avg_price=price)
 
     def close_position(self, symbol) -> OrderResult:
+        if self.fail_close > 0:
+            self.fail_close -= 1
+            raise RuntimeError("insufficient qty available")
         p = self._pos.pop(symbol, None)
         if not p:
             return OrderResult("", "none")
@@ -104,8 +109,14 @@ class FakeBroker:
         return OrderResult(broker_id=f"fake-close-{symbol}", status="filled", filled_avg_price=self._prices[symbol])
 
     def close_all(self) -> None:
+        errors = []
         for s in list(self._pos):
-            self.close_position(s)
+            try:
+                self.close_position(s)
+            except RuntimeError as e:
+                errors.append(f"{s}: {e}")
+        if errors:
+            raise RuntimeError("; ".join(errors))
 
     def cancel_all_orders(self) -> None:
         self._orders = []

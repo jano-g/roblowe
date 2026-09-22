@@ -15,6 +15,7 @@ class Account:
     pattern_day_trader: bool = False
     trading_blocked: bool = False
     currency: str = "USD"
+    last_equity: float = 0.0  # equity pri zatvorení predošlého obchodného dňa (Alpaca)
 
 
 @dataclass
