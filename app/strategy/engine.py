@@ -64,6 +64,10 @@ class Engine:
         self.news_views = a.symbols
         self.market_note = a.market_note
 
+    def _ts(self) -> str:
+        """Časová pečiatka záznamov z rovnakých hodín ako rozhodnutia (testovateľné cez now=)."""
+        return self._now().astimezone(timezone.utc).replace(microsecond=0).isoformat()
+
     @staticmethod
     def trading_date(now: datetime) -> str:
         return now.astimezone(config.MARKET_TZ).strftime("%Y-%m-%d")
@@ -80,7 +84,7 @@ class Engine:
     def _decide(self, symbol: str, action: str, reason: str, *, price=None, tech=None, news=None, score=None,
                 details=None) -> dict:
         d = {
-            "at": db.now_iso(), "symbol": symbol, "price": price,
+            "at": self._ts(), "symbol": symbol, "price": price,
             "tech_score": tech.score if tech else None,
             "news_score": news.sentiment if news else None,
             "news_confidence": news.confidence if news else None,
@@ -94,7 +98,7 @@ class Engine:
 
     def _order(self, symbol: str, side: str, qty: float, kind: str, *, price=None, stop=None, tp=None,
                broker_id=None, status="submitted", note=None) -> dict:
-        o = {"at": db.now_iso(), "mode": self.mode, "broker_id": broker_id, "symbol": symbol, "side": side, "qty": qty,
+        o = {"at": self._ts(), "mode": self.mode, "broker_id": broker_id, "symbol": symbol, "side": side, "qty": qty,
              "kind": kind, "price": price, "stop_price": stop, "take_profit": tp, "status": status, "note": note}
         db.run("INSERT INTO orders(at,mode,broker_id,symbol,side,qty,kind,price,stop_price,take_profit,status,note) "
                "VALUES (:at,:mode,:broker_id,:symbol,:side,:qty,:kind,:price,:stop_price,:take_profit,:status,:note)", o)
@@ -115,7 +119,7 @@ class Engine:
         for p in positions:
             out.append(self._order(p.symbol, "sell", p.qty, "flatten", price=p.current_price,
                                    status="submitted" if self._live() else "dry", note=reason))
-        if positions:
+        if positions and settings.get("notify_mode") in ("trade", "both"):
             self.notify("Roblowe: zatváram všetko", f"{reason} · {len(positions)} pozícií")
         return out
 
@@ -131,7 +135,7 @@ class Engine:
                 reason = f"{reason} · CHYBA: {e}"
         o = self._order(p.symbol, "sell", p.qty, "exit", price=p.current_price, broker_id=broker_id, status=status,
                         note=reason)
-        if settings.get("notify_on_trade"):
+        if settings.get("notify_mode") in ("trade", "both"):
             self.notify(f"Roblowe: predaj {p.symbol}", f"{p.qty:g} ks @ {p.current_price:.2f} · P/L {p.unrealized_pl:+.0f} USD · {reason}")
         return o
 
@@ -147,7 +151,7 @@ class Engine:
                 reason = f"{reason} · CHYBA: {e}"
         o = self._order(symbol, "buy", sizing.qty, "entry", price=price, stop=sizing.stop_price, tp=sizing.take_profit,
                         broker_id=broker_id, status=status, note=reason)
-        if settings.get("notify_on_trade"):
+        if settings.get("notify_mode") in ("trade", "both"):
             self.notify(f"Roblowe: kúpa {symbol}", f"{sizing.qty} ks @ {price:.2f} · stop {sizing.stop_price:.2f} · cieľ {sizing.take_profit:.2f} · {reason}")
         return o
 
@@ -209,6 +213,7 @@ class Engine:
         if not clock.is_open:
             rep.status = "closed"
             rep.notes.append(f"Burza zatvorená, otvára {clock.next_open.astimezone(config.TZ):%d.%m. %H:%M}")
+            self.send_daily_summaries(clock.now)
             self.last_report = rep
             return rep
 
@@ -217,7 +222,7 @@ class Engine:
         held = {p.symbol: p for p in positions}
         date = self.trading_date(clock.now)
         day = self._ensure_day(date, acct.equity)
-        db.run("INSERT INTO equity(at, equity, cash) VALUES (?,?,?)", (db.now_iso(), acct.equity, acct.cash))
+        db.run("INSERT INTO equity(at, equity, cash) VALUES (?,?,?)", (self._ts(), acct.equity, acct.cash))
         rep.equity = acct.equity
         hit, pnl_pct = risk.daily_loss_hit(day["start_equity"], acct.equity, settings.get("daily_loss_limit_pct"))
         rep.day_pnl_pct = round(pnl_pct, 2)
@@ -367,6 +372,63 @@ class Engine:
                 cash_left -= sizing.qty * t.price
         self.last_report = rep
         return rep
+
+    # -- denný súhrn -------------------------------------------------------------------------------
+    def build_daily_summary(self, day: dict) -> tuple[str, str]:
+        """(titulok, text) pre ntfy. Realizovaný výsledok je približný: párovanie výstupov so vstupmi
+        toho istého tickera v ten deň podľa zaznamenaných cien."""
+        date = day["date"]
+        d0 = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=config.MARKET_TZ)
+        lo = d0.astimezone(timezone.utc).isoformat()
+        hi = (d0 + timedelta(days=1)).astimezone(timezone.utc).isoformat()
+        last = db.row("SELECT equity FROM equity WHERE at >= ? AND at < ? ORDER BY at DESC LIMIT 1", (lo, hi))
+        end_eq = last["equity"] if last else day["start_equity"]
+        pnl = end_eq - day["start_equity"]
+        pnl_pct = (pnl / day["start_equity"] * 100) if day["start_equity"] else 0.0
+        orders = db.rows("SELECT * FROM orders WHERE at >= ? AND at < ? AND status != 'rejected' ORDER BY id", (lo, hi))
+        entries = [o for o in orders if o["kind"] == "entry"]
+        exits = [o for o in orders if o["kind"] in ("exit", "flatten")]
+        entry_px: dict[str, list[float]] = {}
+        for o in entries:
+            entry_px.setdefault(o["symbol"], []).append(o["price"] or 0)
+        wins, losses, lines = 0, 0, []
+        for o in exits:
+            eps = entry_px.get(o["symbol"])
+            if not eps or not o["price"]:
+                continue
+            ep = eps.pop(0)
+            r = (o["price"] - ep) * o["qty"]
+            wins += r > 0
+            losses += r <= 0
+            lines.append(f"{o['symbol']} {r:+.0f} USD")
+        mode = orders[0]["mode"] if orders else self.mode
+        title = f"Roblowe: deň {date[8:]}.{date[5:7]}. {pnl_pct:+.2f} %"
+        usd = lambda v: f"{v:,.0f}".replace(",", " ")  # noqa: E731
+        parts = [f"Equity {usd(end_eq)} USD ({'+' if pnl >= 0 else '−'}{usd(abs(pnl))} USD, {pnl_pct:+.2f} %)",
+                 f"Obchody: {len(entries)} vstupov, {len(exits)} výstupov" + (f", {wins} v pluse / {losses} v mínuse" if exits else "")]
+        if lines:
+            parts.append("Výsledky: " + ", ".join(lines[:8]) + (" …" if len(lines) > 8 else ""))
+        if day["halted"]:
+            parts.append(f"STOP: {day['halt_reason']}")
+        if mode == "dry":
+            parts.append("Režim dry – nič sa neposielalo na burzu.")
+        if self.market_note:
+            parts.append(f"Trh: {self.market_note}")
+        return title, "\n".join(parts)
+
+    def send_daily_summaries(self, now: datetime) -> int:
+        """Po zatvorení burzy pošle jeden súhrn za každý deň, ktorý ho ešte nemá."""
+        today = self.trading_date(now)
+        sent = 0
+        for day in db.rows("SELECT * FROM days WHERE summary_sent=0 AND date <= ? ORDER BY date", (today,)):
+            if settings.get("notify_mode") in ("daily", "both"):
+                title, text = self.build_daily_summary(day)
+                self.notify(title, text)
+            with db.tx():
+                db.run("UPDATE days SET summary_sent=1 WHERE date=?", (day["date"],))
+                db.log_history("agent", "daily_summary", {"date": day["date"]})
+            sent += 1
+        return sent
 
     # -- ručné akcie z UI ----------------------------------------------------------------------
     def panic(self, actor: str) -> int:

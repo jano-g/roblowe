@@ -48,7 +48,7 @@ OVERRIDABLE: dict[str, tuple[str, Any, str, str]] = {
     # Notifikácie
     "ntfy_server": ("NTFY_SERVER", "https://ntfy.sh", "str", "ntfy server."),
     "ntfy_topic": ("NTFY_TOPIC", "", "str", "ntfy téma (prázdne = vypnuté)."),
-    "notify_on_trade": ("NOTIFY_ON_TRADE", "1", "bool", "Push pri každom obchode."),
+    "notify_mode": ("NOTIFY_MODE", "both", "str", "trade = push pri každom obchode, daily = jeden súhrn po zatvorení burzy, both = oboje. STOP a chyby chodia vždy."),
     # Zálohy
     "backup_enabled": ("BACKUP_ENABLED", "1", "bool", "Denná záloha DB."),
     "backup_time": ("BACKUP_TIME", "03:30", "str", "Čas zálohy (Europe/Bratislava)."),
@@ -151,6 +151,8 @@ def validate(key: str, value: Any) -> str:
         raise ValueError("Režim musí byť dry, paper alebo live.")
     if key == "trading_mode":
         return s.lower()
+    if key == "notify_mode" and s not in ("trade", "daily", "both"):
+        raise ValueError("Notifikácie: trade, daily alebo both.")
     if key == "analyst_effort" and s not in ("low", "medium", "high"):
         raise ValueError("Hĺbka uvažovania: low, medium alebo high.")
     if key == "bar_timeframe" and s not in ("1Min", "5Min", "15Min", "30Min", "1Hour"):

@@ -248,6 +248,18 @@ async def notify_test(request: Request):
     return {"ok": True, "message": msg}
 
 
+@router.post("/notify/summary")
+def notify_summary(request: Request):
+    """Pošle súhrn posledného obchodného dňa hneď (test / náhľad)."""
+    _user(request)
+    day = db.row("SELECT * FROM days ORDER BY date DESC LIMIT 1")
+    if not day or not scheduler.engine:
+        raise ApiError("Zatiaľ nie je žiadny obchodný deň.")
+    title, text = scheduler.engine.build_daily_summary(day)
+    ntfy.notify(title, text)
+    return {"ok": True, "title": title, "text": text}
+
+
 @router.get("/backups")
 def backups(request: Request):
     _user(request)

@@ -58,8 +58,14 @@ Na mobile: Zdieľať → *Pridať na plochu* (PWA).
 
 ## Notifikácie
 
-ntfy.sh téma (dlhá, náhodná – funguje ako heslo) → push pri každom obchode, pri dennom STOPe,
-pri chybe. Nastavenia → Notifikácie → *Poslať skúšobnú notifikáciu*.
+ntfy.sh téma (dlhá, náhodná – funguje ako heslo). V Nastavenia → Notifikácie si vyberieš, čo chodí:
+- **každý obchod** – push pri kúpe aj predaji (ticker, kusy, cena, stop, cieľ, dôvod),
+- **denný súhrn** – jedna správa po zatvorení burzy: equity, výsledok dňa v USD a %, počet
+  vstupov/výstupov, koľko obchodov skončilo v pluse a mínuse, prípadný STOP a nálada trhu,
+- **oboje** (default).
+
+STOP, denný limit straty a chyby chodia vždy. *Poslať skúšobnú notifikáciu* a *Poslať súhrn dňa
+teraz* slúžia na overenie.
 
 ## Zálohy
 

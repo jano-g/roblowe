@@ -93,6 +93,10 @@ MIGRATIONS: list[str] = [
     );
     CREATE INDEX history_at ON history(at DESC);
     """,
+    # 2 – denný súhrn odoslaný
+    """
+    ALTER TABLE days ADD COLUMN summary_sent INTEGER NOT NULL DEFAULT 0;
+    """,
 ]
 
 

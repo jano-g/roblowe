@@ -148,3 +148,38 @@ def test_dry_mode_does_not_reenter_same_symbol():
     eng.cycle()
     assert db.q1("SELECT COUNT(*) n FROM orders WHERE kind='entry'")["n"] == 1
     assert "dry pozícia" in db.row("SELECT reason FROM decisions WHERE symbol='AAA' ORDER BY id DESC")["reason"]
+
+
+def test_daily_summary_sent_once_after_close():
+    sent = []
+    fb = FakeBroker(equity=100_000)
+    fb.now = NOW
+    clock_open = type("C", (), {"is_open": True, "now": NOW, "next_open": NOW + timedelta(days=1), "next_close": NOW + timedelta(hours=5)})()
+    clock_closing = type("C", (), {"is_open": True, "now": NOW, "next_open": NOW + timedelta(days=1), "next_close": NOW + timedelta(minutes=5)})()
+    clock_closed = type("C", (), {"is_open": False, "now": NOW + timedelta(hours=6), "next_open": NOW + timedelta(days=1), "next_close": NOW + timedelta(days=1, hours=6)})()
+    fb.clock = lambda: clock_open
+    settings.set_many({"watchlist": "AAA", "agent_enabled": "1", "analyst_enabled": "0", "notify_mode": "daily"}, [], "test")
+    eng = Engine(fb, None, "paper", notify=lambda t, m: sent.append((t, m)), now=lambda: NOW)
+    fb.set_bars("AAA", trend_bars(0.4))
+    eng.cycle()
+    assert sent == []  # notify_mode=daily → žiadny push pri obchode
+    fb.set_price("AAA", fb.latest_prices(["AAA"])["AAA"] + 2)
+    fb.clock = lambda: clock_closing
+    eng.cycle()  # flatten
+    fb.clock = lambda: clock_closed
+    eng.cycle()
+    assert len(sent) == 1
+    title, text = sent[0]
+    assert title.startswith("Roblowe: deň") and "1 vstupov, 1 výstupov" in text and "1 v pluse" in text
+    assert db.row("SELECT summary_sent FROM days")["summary_sent"] == 1
+    eng.cycle()
+    assert len(sent) == 1  # neposiela znova
+
+
+def test_notify_mode_trade_sends_per_trade():
+    sent = []
+    fb, eng = make_engine(notify_mode="trade")
+    eng.notify = lambda t, m: sent.append(t)
+    fb.set_bars("AAA", trend_bars(0.4))
+    eng.cycle()
+    assert any("kúpa AAA" in t for t in sent)

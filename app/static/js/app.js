@@ -244,7 +244,7 @@
     buy_threshold: 'Hranica kúpy', sell_threshold: 'Hranica predaja', tech_weight: 'Váha techniky', news_weight: 'Váha správ',
     news_min_confidence: 'Min. istota správy', require_news_for_entry: 'Vstup len s katalyzátorom',
     analyst_enabled: 'Analytik zapnutý', analyst_model: 'Model', analyst_effort: 'Hĺbka uvažovania', analyst_max_headlines: 'Max. správ na analýzu',
-    analyst_daily_budget_calls: 'Max. volaní za deň', ntfy_server: 'ntfy server', ntfy_topic: 'ntfy téma', notify_on_trade: 'Push pri obchode',
+    analyst_daily_budget_calls: 'Max. volaní za deň', ntfy_server: 'ntfy server', ntfy_topic: 'ntfy téma', notify_mode: 'Čo posielať',
     backup_enabled: 'Denná záloha', backup_time: 'Čas zálohy', backup_keep: 'Ponechať lokálnych záloh', b2_key_id: 'B2 keyID',
     b2_app_key: 'B2 applicationKey', b2_bucket: 'B2 bucket', b2_prefix: 'B2 prefix',
   };
@@ -253,7 +253,7 @@
     ['Riziko', ['risk_per_trade_pct', 'max_position_pct', 'max_positions', 'daily_loss_limit_pct', 'atr_stop_mult', 'reward_risk', 'flatten_before_close_min', 'no_entry_first_min', 'no_entry_after_close_min', 'respect_pdt']],
     ['Signály', ['buy_threshold', 'sell_threshold', 'tech_weight', 'news_weight', 'news_min_confidence', 'require_news_for_entry']],
     ['Claude analytik', ['analyst_enabled', 'analyst_model', 'analyst_effort', 'analyst_max_headlines', 'analyst_daily_budget_calls']],
-    ['Notifikácie', ['ntfy_server', 'ntfy_topic', 'notify_on_trade']],
+    ['Notifikácie', ['ntfy_server', 'ntfy_topic', 'notify_mode']],
     ['Zálohy', ['backup_enabled', 'backup_time', 'backup_keep', 'b2_key_id', 'b2_app_key', 'b2_bucket', 'b2_prefix']],
   ];
   async function viewSettings(root) {
@@ -265,6 +265,7 @@
       let input;
       if (m.kind === 'bool') input = el('input', { type: 'checkbox', id, checked: m.value === true });
       else if (m.kind === 'secret') input = el('input', { type: 'password', id, placeholder: m.set ? '•••••• (uložené, prázdne = nemeniť)' : 'nenastavené', autocomplete: 'new-password' });
+      else if (key === 'notify_mode') input = el('select', { id }, ...[['trade', 'každý obchod'], ['daily', 'jeden súhrn po zatvorení burzy'], ['both', 'každý obchod aj denný súhrn']].map(([v, t]) => el('option', { value: v, selected: m.value === v }, t)));
       else if (key === 'analyst_effort') input = el('select', { id }, ...['low', 'medium', 'high'].map(v => el('option', { value: v, selected: m.value === v }, v)));
       else if (key === 'bar_timeframe') input = el('select', { id }, ...['1Min', '5Min', '15Min', '30Min', '1Hour'].map(v => el('option', { value: v, selected: m.value === v }, v)));
       else input = el('input', { id, value: String(m.value), inputmode: m.kind === 'float' || m.kind === 'int' ? 'decimal' : 'text' });
@@ -321,7 +322,10 @@
     mount(root,
       brokerCard,
       ...GROUPS.map(([title, keys]) => el('div', { class: 'card' }, el('h2', {}, title), el('div', { class: 'fields' }, keys.map(field)),
-        title === 'Notifikácie' ? el('button', { class: 'btn small', onclick: async () => { try { const r = await api('/notify/test', { method: 'POST', body: { server: inputs.ntfy_server.value, topic: inputs.ntfy_topic.value } }); toast(r.message); } catch (e) { toast(e.message, true); } } }, 'Poslať skúšobnú notifikáciu') : null,
+        title === 'Notifikácie' ? el('div', { class: 'row' },
+          el('button', { class: 'btn small', onclick: async () => { try { const r = await api('/notify/test', { method: 'POST', body: { server: inputs.ntfy_server.value, topic: inputs.ntfy_topic.value } }); toast(r.message); } catch (e) { toast(e.message, true); } } }, 'Poslať skúšobnú notifikáciu'),
+          el('button', { class: 'btn small', onclick: async () => { try { const r = await api('/notify/summary', { method: 'POST', body: {} }); toast('Odoslané: ' + r.title); } catch (e) { toast(e.message, true); } } }, 'Poslať súhrn dňa teraz'),
+          el('span', { class: 'note' }, 'STOP, denný limit a chyby chodia vždy, bez ohľadu na voľbu.')) : null,
         title === 'Zálohy' ? el('div', { class: 'row' },
           el('button', { class: 'btn small', onclick: async () => { try { const r = await api('/backups/test-b2', { method: 'POST', body: {} }); toast(r.message); } catch (e) { toast(e.message, true); } } }, 'Otestovať B2'),
           el('button', { class: 'btn small', onclick: async () => { try { const r = await api('/backups', { method: 'POST', body: {} }); toast(r.warning ? 'Lokálna záloha OK, B2: ' + r.warning : 'Záloha hotová: ' + r.result.local, !!r.warning); route(); } catch (e) { toast(e.message, true); } } }, 'Zálohovať teraz'),
