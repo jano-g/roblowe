@@ -14,18 +14,15 @@ tvrdé rizikové mantinely (`app/strategy/risk.py`) → bracket objednávky (sto
   Bez build stepu, ORM, Redis, pandas.
 - Jeden uvicorn proces: `app/scheduler.py` (thread, tick 30 s) spúšťa `Engine.cycle()`, dennú zálohu
   a upratovanie. Migrácie `app/db.py:MIGRATIONS` (PRAGMA user_version), forward-only.
-- Broker: `app/broker/alpaca.py` (REST cez httpx, trading + data + news), `trading212.py` (obchod na
-  Trading 212, dáta/správy/hodiny z Alpaca; market + GTC stop, cieľ stráži engine, rate limiter,
-  prepočet do USD cez `services/fx.py` = kurzy ECB), `fake.py` pre testy a dry bez kľúčov.
-  Rozhranie `base.py:Broker` s príznakmi `native_bracket`, `pdt_applies` a `account_key`. Výber: `settings.broker_name()`.
-- Štatistiky sú per účet (`account_key`: alpaca:paper|alpaca:live|trading212:demo|trading212:live|fake):
+- Broker: `app/broker/alpaca.py` (REST cez httpx, trading + data + news), `fake.py` pre testy a dry bez
+  kľúčov. Rozhranie `base.py:Broker` s `account_key`. Iný broker nie je (Trading 212 bol odstránený pre
+  poplatky za prevod meny pri každom obchode; jeho história v DB ostáva ako `trading212:*`).
+- Štatistiky sú per účet (`account_key`: alpaca:paper|alpaca:live|fake):
   `days` (PK account+date), `equity`, `orders`, `decisions` majú stĺpec `account`; engine píše/číta
   len `self.account`, API berie `?account=` (default aktuálny). Správy od Claude sú spoločné.
-- `broker_name = both`: `scheduler.engines` = jeden Engine na účet (zdieľaný `NewsState` → jedna
-  analýza správ), `scheduler.engine` = prvý (hodiny, hlavička), `engine_for(account)` pre API.
-  Chyba jedného účtu v cykle nezastaví ostatné.
+- `scheduler.engines` je zoznam (dnes vždy jeden Engine), API hľadá engine cez `engine_for(account)`.
 - Stratégia: `signals.py` (EMA/RSI/ATR/VWAP → skóre), `analyst.py` (Claude, štruktúrovaný JSON),
-  `risk.py` (sizing, denná strata, PDT), `engine.py` (poradie krokov je zámerné a nemenné).
+  `risk.py` (sizing, denná strata), `engine.py` (poradie krokov je zámerné a nemenné).
 - `.env` je základ, `settings.OVERRIDABLE` sa dá prepísať v Nastaveniach (DB vyhráva); tajomstvá
   (`SECRET_KEYS`) sa nikdy nevracajú do prehliadača. `settings.BROKER_KEYS` (režim, Alpaca paper/live
   kľúče, Anthropic kľúč) idú len cez `/api/broker` (heslo), nie cez `PUT /api/settings`.
@@ -55,13 +52,11 @@ Bez Alpaca kľúčov beží `FakeBroker` (syntetické dáta, burza „stále otv
 ## Gotchas
 - `sqlite3.executescript` sám commitne transakciu → BEGIN/COMMIT patrí do skriptu (db.migrate).
 - Bracket objednávky vyžadujú celé akcie (žiadne fractional); `close_position` najprv ruší TP/SL nohy.
-- PDT: pod 25 000 USD equity Alpaca povolí 3 day-trady za 5 dní; engine to stráži (`respect_pdt`).
+- Pravidlo PDT neexistuje od 4. 6. 2026 (FINRA); Alpaca odstránila polia `daytrade_count` a
+  `pattern_day_trader` – nepoužívať, kúpnu silu hlási `buying_power`.
 - `mins_since_open` počíta 6,5 h seansu – v skrátené dni (13:00 ET) je okno „prvých N minút“ mäkšie.
 - Alpaca IEX feed je bezplatný, ale zobrazuje len IEX objem; na SIP treba platený plán.
 - Bez ALPACA kľúčov v dry režime sú dáta syntetické – nič z toho nehovorí o reálnom trhu.
 - SPA: automatická obnova pri návrate do appky prekresľuje len Prehľad/Obchody/Správy (nikdy formulár);
   neuložené hodnoty formulárov (okrem hesiel a kľúčov) drží `sessionStorage` (`draftify`).
 - Malé VPS (1.8 GiB): `mem_limit: 256m`; žiadne pandas/numpy.
-- Trading 212 API: bez cien/sviečok/správ, predaj = záporné quantity, objednávky nie sú idempotentné
-  (pri timeoute NEopakovať), obchoduje len v primárnej mene účtu, limity per endpoint (summary 1/5 s).
-  Zoznam nástrojov sa cachuje do `/data/t212_instruments.json` (24 h).

@@ -25,47 +25,18 @@ z mobilu na dashboarde.
    - max. 10 % equity v jednej pozícii, max. 4 pozície,
    - denná strata 2 % → všetko zavrie a do zajtra nič nekúpi,
    - 10 minút pred zatvorením zavrie všetko, prvých 15 minút a poslednú hodinu nevstupuje,
-   - pravidlo PDT (pod 25 000 USD max. 3 day-trady za 5 dní).
 6. **Objednávky** sú bracket (market vstup + stop-loss + take-profit u brokera), takže stop drží
    aj keď appka spadne.
 
 Claude nikdy neposiela objednávky – dodáva iba skóre. Všetko ostatné je deterministický kód,
 ktorý si vieš prečítať v `app/strategy/`.
 
-## Broker: Alpaca alebo Trading 212
-
-V Nastavenia → Broker a kľúče si vyberieš, kde agent obchoduje. Ceny, sviečky, správy a hodiny
-burzy sú v oboch prípadoch z Alpaca – Trading 212 API ich nemá. Stačia na to bezplatné Alpaca
-paper kľúče, vklad na Alpaca netreba.
-
-| | Alpaca (USA) | Trading 212 (EÚ, Cyprus) |
-|---|---|---|
-| Vklad / výber | medzinárodný prevod v USD | karta, Apple Pay, SEPA; výber zadarmo |
-| Pravidlo PDT (pod 25 000 USD max. 3 day-trady / 5 dní) | platí | neplatí |
-| Stop-loss a cieľ | bracket objednávka u brokera | stop-loss u brokera (platí do zrušenia), cieľ stráži agent každý cyklus |
-| Skúšobný účet | paper | demo (Practice) |
-
-**Oboje naraz (porovnanie).** Broker *Oboje naraz* obchoduje rovnaké signály súčasne na Alpaca aj
-Trading 212 (v režime paper = Alpaca paper + Trading 212 demo). Každý účet má vlastné limity rizika,
-denný limit straty, dni, krivku equity a objednávky; na Prehľade a v Obchodoch prepínaš účet hore.
-Správy analyzuje Claude raz za cyklus pre oba účty. STOP zavrie pozície na oboch. Push notifikácie
-majú v titulku názov účtu. Výsledky nebudú rovnaké – iná veľkosť účtu, pravidlo PDT len na Alpaca,
-na Trading 212 cieľ stráži agent a stop je samostatná objednávka.
-
-**Trading 212 a mena účtu.** API obchoduje len v primárnej mene účtu. Pri účte v EUR sa pri každom
-nákupe aj predaji americkej akcie platí prevod 0,15 %. V appke Trading 212 nastav Currency options →
-nákup aj predaj na *Asset currency* a po prvých obchodoch na demo účte over v histórii, či sa
-poplatok za prevod účtuje. Sumy účtu v EUR appka prepočíta na USD denným kurzom ECB.
-
-Ak Trading 212 niektorý ticker z watchlistu nemá, agent ho preskočí a v Obchodoch uvidíš dôvod.
-Agent zavrie každú pozíciu, ktorú v ten deň sám neotvoril – účet nechaj len agentovi.
-
 ## Režimy
 
 | Režim | Čo robí | Kedy |
 |---|---|---|
 | `dry` | Rozhoduje, loguje, na burzu neposiela nič. S Alpaca kľúčmi používa reálne dáta. | prvé dni – sleduj, či dôvody dávajú zmysel |
-| `paper` | Obchoduje na Alpaca paper alebo Trading 212 demo účte (fiktívne peniaze). | 4–8 týždňov minimum |
+| `paper` | Obchoduje na Alpaca paper účte (fiktívne peniaze). | 4–8 týždňov minimum |
 | `live` | Skutočné peniaze. Prepnutie vyžaduje heslo a napísať LIVE; zapnutie agenta v live režime ďalšie LIVE. | až keď paper výsledky presvedčia |
 
 Režim a API kľúče (Alpaca paper, Alpaca live, Anthropic) sa nastavujú v appke: **Nastavenia →
@@ -108,12 +79,13 @@ Zlyhanie B2 nikdy nestratí lokálnu kópiu. Nastavenia → Zálohy → *Otestov
   dni s halt-om.
 - **Náklady.** Alpaca akcie sú bez komisie, ale platíš spread. Claude: pri 60 analýzach denne
   a ~3 000 tokenoch na analýzu je to zhruba 1–2 USD/deň (`ANALYST_DAILY_BUDGET_CALLS` to stropuje).
+- **Vklad z eura.** Alpaca prijíma len USD. Eurá si najprv lacno zameň (Revolut, Wise) a pošli USD
+  prevod – konverziu platíš raz pri vklade a raz pri výbere, nie pri každom obchode.
 - **Dane (SR).** Zisky z predaja cenných papierov držaných menej než rok sú zdaniteľný príjem
   (§ 8 ZDP, 19/25 %), plus zdravotné poistenie. Alpaca pošle ročný výpis; vyplň W-8BEN, aby sa
   neuplatnila plná US zrážková daň z dividend.
-- **PDT.** Pod 25 000 USD Alpaca margin účet obmedzuje day-trading na 3 obchody za 5 dní.
-  S malou sumou bude agent väčšinu času čakať. Buď to akceptuj, alebo `RESPECT_PDT=0` na
-  vlastné riziko (Alpaca účet potom zablokuje).
+- **Pravidlo PDT už neplatí.** FINRA ho zrušila 4. 6. 2026 a Alpaca odvtedy neobmedzuje počet
+  denných obchodov ani pri účte pod 25 000 USD.
 - **Výpadky.** Ak appka spadne, stop-loss a take-profit sú u brokera (bracket), ale „zavri
   pred koncom seansy“ neprebehne – pozícia môže ostať cez noc. Sleduj ntfy chybové notifikácie.
 - **Syntetické dáta.** Bez Alpaca kľúčov beží FakeBroker s náhodnými cenami – slúži len na

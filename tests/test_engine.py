@@ -70,15 +70,6 @@ def test_max_positions():
     assert "max. počet" in db.row("SELECT reason FROM decisions WHERE action='skip'")["reason"]
 
 
-def test_pdt_blocks_entry_under_25k():
-    fb2, eng2 = make_engine()
-    fb2._cash = 20_000
-    fb2.daytrade_count = 3
-    fb2.set_bars("AAA", trend_bars(0.4))
-    eng2.cycle()
-    assert fb2.submitted == []
-    assert "PDT" in db.row("SELECT reason FROM decisions WHERE symbol='AAA' ORDER BY id DESC")["reason"]
-
 
 def test_daily_loss_halts_and_flattens():
     fb, eng = make_engine()
@@ -228,12 +219,12 @@ def test_stats_are_separate_per_account():
     fb.set_bars("AAA", trend_bars(-0.1))
     eng.cycle()  # účet "fake", 100 000
     fb2 = FakeBroker(equity=5_732)
-    fb2.account_key = "trading212:demo"
+    fb2.account_key = "alpaca:live"
     fb2.clock = fb.clock
     fb2.set_bars("AAA", trend_bars(-0.1))
     eng2 = Engine(fb2, None, "paper", notify=lambda t, m: None, now=lambda: NOW)
     rep = eng2.cycle()
     assert rep.day_pnl_pct == 0.0  # nie −94 %
     rows = {r["account"]: r["start_equity"] for r in db.rows("SELECT account, start_equity FROM days")}
-    assert rows == {"fake": 100_000, "trading212:demo": 5_732}
-    assert {r["account"] for r in db.rows("SELECT DISTINCT account FROM equity")} == {"fake", "trading212:demo"}
+    assert rows == {"fake": 100_000, "alpaca:live": 5_732}
+    assert {r["account"] for r in db.rows("SELECT DISTINCT account FROM equity")} == {"fake", "alpaca:live"}

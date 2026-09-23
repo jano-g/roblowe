@@ -11,13 +11,9 @@ class Account:
     equity: float
     cash: float
     buying_power: float
-    daytrade_count: int = 0
-    pattern_day_trader: bool = False
     trading_blocked: bool = False
     currency: str = "USD"
     last_equity: float = 0.0  # equity pri zatvorení predošlého obchodného dňa (Alpaca)
-    account_currency: str = "USD"  # primárna mena účtu u brokera (hodnoty vyššie sú vždy v USD)
-    fx_to_usd: float = 1.0
 
 
 @dataclass
@@ -68,9 +64,7 @@ class OrderResult:
 
 
 class Broker(Protocol):
-    native_bracket: bool   # broker drží stop-loss aj take-profit (inak cieľ stráži engine)
-    pdt_applies: bool      # americké pravidlo Pattern Day Trader
-    account_key: str       # "alpaca:paper" | "alpaca:live" | "trading212:demo" | "trading212:live" | "fake"
+    account_key: str       # "alpaca:paper" | "alpaca:live" | "fake"
 
     def account(self) -> Account: ...
     def positions(self) -> list[Position]: ...
@@ -83,14 +77,14 @@ class Broker(Protocol):
     def close_position(self, symbol: str) -> OrderResult: ...
     def close_all(self) -> None: ...
     def cancel_all_orders(self) -> None: ...
-    def place_stop(self, symbol: str, qty: float, stop_price: float) -> OrderResult: ...
 
 
 ACCOUNT_LABELS = {
     "alpaca:paper": "Alpaca paper",
     "alpaca:live": "Alpaca live",
-    "trading212:demo": "Trading 212 demo",
-    "trading212:live": "Trading 212 live",
+    # história z obdobia, keď appka podporovala aj Trading 212 (dáta ostali v DB)
+    "trading212:demo": "Trading 212 demo (história)",
+    "trading212:live": "Trading 212 live (história)",
     "fake": "Syntetické dáta",
 }
 

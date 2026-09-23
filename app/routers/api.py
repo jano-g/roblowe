@@ -78,7 +78,6 @@ def me(request: Request):
         "agent_enabled": settings.get("agent_enabled"),
         "analyst": bool(scheduler.engine and scheduler.engine.analyst),
         "broker": scheduler.broker.__class__.__name__ if scheduler.broker else None,
-        "broker_name": settings.broker_name(),
         "account": acc, "account_label": account_label(acc), "accounts": _accounts(),
         "active_accounts": [e.account for e in scheduler.engines],
         "broker_label": " + ".join(account_label(e.account) for e in scheduler.engines),
@@ -103,9 +102,7 @@ def overview(request: Request, account: str | None = None):
         def fetch():
             a = br.account()
             return ({"equity": a.equity, "cash": a.cash, "last_equity": a.last_equity, "buying_power": a.buying_power,
-                     "account_currency": a.account_currency, "fx_to_usd": a.fx_to_usd,
-                     "daytrade_count": a.daytrade_count, "pdt_applies": getattr(br, "pdt_applies", True),
-                     "pattern_day_trader": a.pattern_day_trader, "trading_blocked": a.trading_blocked},
+                     "trading_blocked": a.trading_blocked},
                     [p.__dict__ for p in br.positions()])
         fut = _POOL.submit(fetch)
         try:
@@ -140,8 +137,11 @@ def overview(request: Request, account: str | None = None):
     today = datetime.now(config.MARKET_TZ).strftime("%Y-%m-%d")
     trades = db.row("SELECT COUNT(*) n, SUM(kind='entry') entries FROM orders WHERE account=? AND status NOT IN ('rejected')",
                     (acc,))
+    d0 = datetime.strptime(today, "%Y-%m-%d").replace(tzinfo=config.MARKET_TZ).astimezone(timezone.utc).isoformat()
+    trades_today = db.q1("SELECT COUNT(*) n FROM orders WHERE account=? AND kind='entry' AND status!='rejected' AND at >= ?",
+                         (acc, d0))["n"]
     return {"account_key": acc, "account_label": account_label(acc), "live": live,
-            "account": acct, "positions": positions, "error": err, "curve": curve, "days": days, "trades": trades,
+            "account": acct, "positions": positions, "error": err, "curve": curve, "days": days, "trades": trades, "trades_today": trades_today,
             "today": next((d for d in days if d["date"] == today), None),
             "market_note": scheduler.engine.market_note if scheduler.engine else ""}
 
@@ -192,9 +192,7 @@ def get_settings(request: Request):
             "broker": scheduler.broker.__class__.__name__ if scheduler.broker else None,
             "broker_label": " + ".join(account_label(e.account) for e in scheduler.engines),
             "analyst_key_set": bool(settings.get("anthropic_api_key")),
-            "alpaca_paper_set": bool(paper_id and paper_sec), "alpaca_live_set": bool(live_id and live_sec),
-            "broker_name": settings.broker_name(),
-            "t212_demo_set": all(settings.t212_creds("paper")), "t212_live_set": all(settings.t212_creds("live"))}
+            "alpaca_paper_set": bool(paper_id and paper_sec), "alpaca_live_set": bool(live_id and live_sec)}
 
 
 @router.put("/settings")
@@ -236,7 +234,7 @@ async def put_broker(request: Request):
     except ValueError as e:
         raise ApiError(str(e))
     # kontrola kľúčov pre zvolený broker + režim (po uložení, aby sa dali zadať spolu s režimom)
-    missing = settings.missing_creds(settings.broker_name(), new_mode) if new_mode != "dry" else None
+    missing = settings.missing_creds(new_mode)
     if missing:
         settings.set_many({"trading_mode": "dry"}, [], u["username"], allow_broker=True)
         scheduler.rebuild()
@@ -244,8 +242,7 @@ async def put_broker(request: Request):
     old_mode = scheduler.mode
     settings.set_many({"agent_enabled": "0"}, [], u["username"])
     scheduler.rebuild()
-    db.log_history(u["username"], "broker_changed", {"mode": scheduler.mode, "broker": settings.broker_name(),
-                                                      "ip": auth.client_ip(request)})
+    db.log_history(u["username"], "broker_changed", {"mode": scheduler.mode, "ip": auth.client_ip(request)})
     if scheduler.mode != old_mode or new_mode == "live":
         ntfy.notify("Roblowe: zmena režimu", f"{old_mode} → {scheduler.mode} (agent vypnutý, zapni ho ručne)", priority=4)
     # over spojenie s každým brokerom
@@ -256,7 +253,7 @@ async def put_broker(request: Request):
         except Exception as ex:  # noqa: BLE001
             raise ApiError(f"Uložené, ale {account_label(e.account)} odmietol kľúče: {ex}", 502)
         accounts.append({"account": e.account, "label": account_label(e.account), "equity": a.equity,
-                         "cash": a.cash, "account_currency": a.account_currency})
+                         "cash": a.cash})
     return {"ok": True, "mode": scheduler.mode, "account": accounts[0], "accounts": accounts,
             "settings": settings.public_view()}
 

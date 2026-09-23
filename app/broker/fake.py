@@ -10,8 +10,6 @@ from .base import Account, Bar, Clock, NewsItem, OrderResult, Position
 
 
 class FakeBroker:
-    native_bracket = True
-    pdt_applies = True
     account_key = "fake"
 
     def __init__(self, equity: float = 100_000.0, symbols: list[str] | None = None, seed: int = 7,
@@ -26,7 +24,6 @@ class FakeBroker:
         self.now = datetime.now(timezone.utc)
         self.submitted: list[dict] = []
         self.news_items: list[NewsItem] = []
-        self.daytrade_count = 0
         self.last_equity = 0.0
         self.fail_close = 0  # koľkokrát má close_position zlyhať (test opakovania)
         for s in symbols or []:
@@ -66,7 +63,7 @@ class FakeBroker:
     def account(self) -> Account:
         mv = sum(p.market_value for p in self._pos.values())
         return Account(equity=self._cash + mv, cash=self._cash, buying_power=self._cash * 2,
-                       daytrade_count=self.daytrade_count, last_equity=self.last_equity)
+                       last_equity=self.last_equity)
 
     def positions(self) -> list[Position]:
         return list(self._pos.values())
@@ -109,7 +106,6 @@ class FakeBroker:
         self._cash += self._prices[symbol] * p.qty
         self._orders = [o for o in self._orders if o["symbol"] != symbol]
         self.submitted.append({"id": f"fake-close-{symbol}", "symbol": symbol, "qty": p.qty, "side": "sell"})
-        self.daytrade_count += 1
         return OrderResult(broker_id=f"fake-close-{symbol}", status="filled", filled_avg_price=self._prices[symbol])
 
     def close_all(self) -> None:
@@ -125,8 +121,3 @@ class FakeBroker:
     def cancel_all_orders(self) -> None:
         self._orders = []
 
-    def place_stop(self, symbol, qty, stop_price) -> OrderResult:
-        oid = f"fake-stop-{symbol}-{len(self.submitted) + 1}"
-        self._orders.append({"id": oid, "symbol": symbol, "type": "stop", "stop": stop_price})
-        self.submitted.append({"id": oid, "symbol": symbol, "qty": qty, "side": "stop", "stop": stop_price})
-        return OrderResult(broker_id=oid, status="new")

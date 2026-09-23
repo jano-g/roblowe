@@ -355,16 +355,6 @@ class Engine:
                 else:
                     open_syms.discard(r["symbol"])
         entries = 0
-        pdt_block = risk.pdt_blocks_entry(acct.equity, acct.daytrade_count,
-                                          settings.get("respect_pdt") and getattr(self.broker, "pdt_applies", True))
-        native_bracket = getattr(self.broker, "native_bracket", True)
-        entry_levels: dict[str, dict] = {}
-        if not native_bracket:
-            # stop a cieľ z dnešných vstupov agenta (broker bez bracketu – cieľ stráži engine)
-            d0 = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=config.MARKET_TZ).astimezone(timezone.utc).isoformat()
-            for r in db.q("SELECT symbol, stop_price, take_profit FROM orders WHERE account=? AND kind='entry' "
-                          "AND status!='rejected' AND at >= ? ORDER BY id", (self.account, d0)):
-                entry_levels[r["symbol"]] = {"stop": r["stop_price"], "tp": r["take_profit"]}
         entry_window = (mins_since_open >= settings.get("no_entry_first_min")
                         and mins_to_close > settings.get("no_entry_after_close_min"))
         cash_left = acct.cash
@@ -383,25 +373,6 @@ class Engine:
 
             # 4) výstupy
             if p:
-                lv = entry_levels.get(s)
-                if not native_bracket and self._live() and lv:
-                    if lv["tp"] and t.price >= lv["tp"]:
-                        rep.orders.append(self.close(p, f"cieľ {lv['tp']:.2f} dosiahnutý"))
-                        rep.decisions.append(self._decide(s, "sell", f"cieľ {lv['tp']:.2f} dosiahnutý", price=t.price,
-                                                          tech=t, news=valid_news, score=score, details=det))
-                        continue
-                    if lv["stop"] and s not in open_syms:
-                        # stop-loss u brokera chýba (zrušený, zlyhal) → zadaj znova, inak zavri
-                        try:
-                            self.broker.place_stop(s, p.qty, lv["stop"])
-                            rep.notes.append(f"{s}: chýbal stop-loss, znova zadaný na {lv['stop']:.2f}.")
-                            self.notify("Roblowe: stop-loss obnovený", f"{s} stop {lv['stop']:.2f}")
-                        except Exception as e:  # noqa: BLE001
-                            log.warning("place_stop %s zlyhalo: %s", s, e)
-                            rep.orders.append(self.close(p, f"stop-loss sa nedal zadať ({e})"))
-                            rep.decisions.append(self._decide(s, "sell", "stop-loss sa nedal zadať", price=t.price,
-                                                              tech=t, news=valid_news, score=score, details=det))
-                            continue
                 if score <= settings.get("sell_threshold"):
                     rep.orders.append(self.close(p, f"skóre {score:+.2f} pod hranicou predaja"))
                     rep.decisions.append(self._decide(s, "sell", "skóre pod hranicou predaja", price=t.price, tech=t,
@@ -411,8 +382,7 @@ class Engine:
                     rep.decisions.append(self._decide(s, "sell", "negatívna správa", price=t.price, tech=t,
                                                       news=valid_news, score=score, details=det))
                 else:
-                    rep.decisions.append(self._decide(s, "hold", "držím, stop/cieľ u brokera" if native_bracket
-                                                      else "držím, stop u brokera, cieľ stráži agent", price=t.price, tech=t,
+                    rep.decisions.append(self._decide(s, "hold", "držím, stop/cieľ u brokera", price=t.price, tech=t,
                                                       news=valid_news, score=score, details=det))
                 continue
 
@@ -432,8 +402,6 @@ class Engine:
                 skip = "mimo vstupného okna (začiatok/koniec seansy)"
             elif len(held) + entries >= settings.get("max_positions"):
                 skip = "max. počet pozícií"
-            elif pdt_block:
-                skip = "pravidlo PDT (equity < 25k, 3 day-trady)"
             elif valid_news and valid_news.sentiment <= -0.3:
                 skip = "správy proti vstupu"
             elif settings.get("require_news_for_entry") and not (valid_news and valid_news.sentiment > 0.3):

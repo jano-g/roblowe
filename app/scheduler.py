@@ -12,7 +12,6 @@ from datetime import datetime
 from . import config, db, settings
 from .broker.alpaca import AlpacaBroker
 from .broker.fake import FakeBroker
-from .broker.trading212 import Trading212Broker
 from .services import backup, ntfy
 from .strategy.analyst import make_analyst
 from .strategy.engine import Engine, NewsState
@@ -22,51 +21,17 @@ log = logging.getLogger("roblowe.scheduler")
 TICK = 30
 
 
-def _build_one(name: str, mode: str, allow_fake: bool = True):
-    """(broker, efektívny režim) pre jedného brokera, alebo (None, None), ak chýbajú kľúče a fake nie je dovolený."""
-    if name == "trading212":
-        akid, asec = settings.alpaca_creds("paper")
-        tk, ts = settings.t212_creds(mode)
-        if akid and asec and tk and ts:
-            env = "live" if mode == "live" else "demo"
-            log.info("Trading 212 %s, dáta z Alpaca (%s…)", env, akid[:4])
-            data = AlpacaBroker(akid, asec, config.ALPACA_PAPER_URL)
-            return Trading212Broker(tk, ts, env, data), mode
-        if mode == "dry" and akid and asec and allow_fake:
-            # dry bez Trading 212 kľúčov: reálne dáta a paper účet z Alpaca, nič sa neposiela
-            return AlpacaBroker(akid, asec, config.ALPACA_PAPER_URL), "dry"
-        log.error("Trading 212 (%s) bez potrebných kľúčov.", mode)
-    else:
-        key_id, secret = settings.alpaca_creds(mode)
-        if key_id and secret:
-            # dry režim s paper kľúčmi = skutočné dáta z Alpaca, žiadne objednávky
-            return AlpacaBroker(key_id, secret, config.alpaca_trading_url(mode)), mode
-        if mode != "dry":
-            log.error("Alpaca (%s) bez kľúčov.", mode)
-    if not allow_fake:
-        return None, None
-    log.warning("Bez kľúčov: používam FakeBroker so syntetickými dátami (len na vyskúšanie UI).")
-    return FakeBroker(symbols=settings.get("watchlist")), "dry"
-
-
-def build_brokers(mode: str) -> list[tuple]:
-    """Zoznam (broker, režim) podľa nastavenia broker_name. Pri „both“ jeden pre každého brokera,
-    ktorý má kľúče; bez kľúčov nikde → jeden FakeBroker v dry. Každý účet najviac raz."""
-    name = settings.broker_name()
-    if name != "both":
-        return [_build_one(name, mode)]
-    out, seen = [], set()
-    for n in ("alpaca", "trading212"):
-        br, m = _build_one(n, mode, allow_fake=False)
-        if br is not None and br.account_key not in seen:
-            out.append((br, m))
-            seen.add(br.account_key)
-    return out or [(FakeBroker(symbols=settings.get("watchlist")), "dry")]
-
-
 def build_broker(mode: str):
-    """Spätná kompatibilita: prvý broker."""
-    return build_brokers(mode)[0]
+    """Vráti (broker, efektívny režim). Bez kľúčov spadne do dry s FakeBroker, nech sa nič neposiela."""
+    key_id, secret = settings.alpaca_creds(mode)
+    if key_id and secret:
+        # dry režim s paper kľúčmi = skutočné dáta z Alpaca, žiadne objednávky
+        return AlpacaBroker(key_id, secret, config.alpaca_trading_url(mode)), mode
+    if mode != "dry":
+        log.error("Režim %s bez Alpaca kľúčov – bežím ako dry s FakeBroker.", mode)
+    else:
+        log.warning("Bez Alpaca kľúčov: používam FakeBroker so syntetickými dátami (len na vyskúšanie UI).")
+    return FakeBroker(symbols=settings.get("watchlist")), "dry"
 
 
 class Scheduler:
@@ -105,7 +70,8 @@ class Scheduler:
         with self._lock:
             news = NewsState()
             analyst = make_analyst()
-            self.engines = [Engine(br, analyst, m, ntfy.notify, news=news) for br, m in build_brokers(settings.mode())]
+            br, m = build_broker(settings.mode())
+            self.engines = [Engine(br, analyst, m, ntfy.notify, news=news)]
             self.last_error = None
             for e in self.engines:
                 log.info("účet %s (%s), režim %s", e.account, e.broker.__class__.__name__, e.mode)

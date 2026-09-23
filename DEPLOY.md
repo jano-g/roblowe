@@ -63,23 +63,14 @@ curl -sI https://roblowe.gordulic.sk/ | head -1     # musí byť 200/303, nie 30
 7. Prepínač v hlavičke **zapni agenta**. V `dry` režime sa nič neposiela, len sa loguje.
 8. Na mobile: Zdieľať → *Pridať na plochu*.
 
-### Trading 212 namiesto Alpaca (voliteľné)
-1. V appke Trading 212 prepni na **Practice** (demo) účet → Settings → **API (Beta)** → Generate API key.
-   Povoľ oprávnenia account, portfolio, orders (read + execute), metadata. Ulož si kľúč aj secret.
-2. Currency options → Default buying aj selling currency → **Asset currency**.
-3. Roblowe → Nastavenia → Broker a kľúče → Broker **Trading 212**, režim `paper`, vlož Trading 212
-   demo kľúč + secret (Alpaca paper kľúče musia byť vyplnené – z nich idú ceny a správy), heslo, uložiť.
-   Toast ukáže hodnotu demo účtu prepočítanú na USD.
-4. Po prvých obchodoch skontroluj v Trading 212 → História, či sa pri obchodoch účtuje poplatok za prevod meny.
-5. Live: to isté s kľúčmi z reálneho Invest účtu, režim `live`, napísať LIVE.
-
 ### Prechod dry → paper → live (všetko v appke, bez reštartu)
 - Po ~týždni v `dry`: Nastavenia → Broker → režim `paper`, heslo, uložiť. Agent sa vypne, zapni ho
   prepínačom. Sleduj 4–8 týždňov.
 - Live: v Alpaca dokonči live účet (KYC, W-8BEN, vklad, 1–3 dni), vygeneruj **live kľúče**.
   Nastavenia → Broker → režim `live`, live Key ID + Secret, heslo → napísať **LIVE**. Skontroluj na
   Prehľade, že equity sedí s tvojím účtom, potom zapni agenta (znova LIVE).
-  Začni sumou, ktorej stratu unesieš. Pod 25 000 USD platí pravidlo PDT (README).
+  Začni sumou, ktorej stratu unesieš. Vklad: Alpaca prijíma len USD – eurá zameň cez Revolut alebo Wise
+  a pošli USD prevod podľa inštrukcií v Alpaca → Banking.
 - Späť: režim `paper` alebo `dry`, heslo, uložiť. Otvorené live pozície predtým zavri (STOP).
 
 ## 6. Aktualizácia
@@ -113,11 +104,8 @@ cd /opt/roblowe && git pull && docker compose up -d --build
 | Broker: „Pre režim paper chýbajú Alpaca paper kľúče – ostávam v dry“ | zadaj Key ID aj Secret pre daný režim (paper vs. live sa líšia!) |
 | Broker: „Uložené, ale broker odmietol kľúče“ / Prehľad „Broker nedostupný“ | preklep v kľúči alebo paper kľúč v live režime; `docker logs` ukáže status 401/403 |
 | Prehľad: „syntetické dáta, bez Alpaca kľúčov“ | Nastavenia → Broker → zadaj paper kľúče |
-| Trading 212: „401, zlý API kľúč“ | kľúč a secret patria k inému účtu (demo vs. live) alebo sú zle skopírované |
-| Trading 212: „403, kľúču chýba oprávnenie“ | pri generovaní kľúča povoľ account, portfolio, orders a metadata |
-| Obchody: „… sa na Trading 212 nedá obchodovať“ | ticker nie je v ponuke Trading 212 – vyhoď ho z watchlistu |
 | Záložka Správy: „Analytik vypnutý“ | chýba Anthropic kľúč (Nastavenia → Broker) alebo `analyst_enabled` vypnuté |
-| Agent nič nekupuje | pozri Obchody → rozhodnutia „preskočené“ s dôvodom (okno, PDT, max. pozícií, skóre) |
+| Agent nič nekupuje | pozri Obchody → rozhodnutia „preskočené“ s dôvodom (vstupné okno, max. pozícií, skóre, agent vypnutý) |
 | Login vždy odmietnutý | heslo z `.env` platí len pri prvom štarte; reset cez `app.cli set-password` |
 | Rate limit blokuje po jednom zlom hesle | nginx musí posielať `X-Forwarded-For $proxy_add_x_forwarded_for` |
 | 502 z nginx | `docker ps` – beží? port 8120 v `.env` aj vo vhoste rovnaký? |

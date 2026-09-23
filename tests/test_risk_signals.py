@@ -31,13 +31,10 @@ def test_position_size_cash_limit_and_zero():
     assert s0.qty == 0 and "riziko" in s0.reason
 
 
-def test_daily_loss_and_pdt():
+def test_daily_loss():
     hit, pct = risk.daily_loss_hit(100_000, 97_900, 2)
     assert hit and round(pct, 1) == -2.1
     assert not risk.daily_loss_hit(100_000, 99_000, 2)[0]
-    assert risk.pdt_blocks_entry(20_000, 3, True)
-    assert not risk.pdt_blocks_entry(30_000, 3, True)
-    assert not risk.pdt_blocks_entry(20_000, 3, False)
 
 
 def test_signals_uptrend_positive_downtrend_negative():

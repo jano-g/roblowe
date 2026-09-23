@@ -50,8 +50,3 @@ def daily_loss_hit(start_equity: float, equity: float, limit_pct: float) -> tupl
     pnl_pct = (equity / start_equity - 1) * 100
     return pnl_pct <= -abs(limit_pct), pnl_pct
 
-
-def pdt_blocks_entry(equity: float, daytrade_count: int, respect: bool) -> bool:
-    """Pattern Day Trader: pod 25 000 USD sú povolené 3 day-trady za 5 obchodných dní.
-    Day-trading agent zavrie každú pozíciu v ten istý deň, takže každý vstup = day-trade."""
-    return respect and equity < 25_000 and daytrade_count >= 3

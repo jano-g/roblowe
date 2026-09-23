@@ -126,6 +126,11 @@ MIGRATIONS: list[str] = [
     CREATE INDEX orders_account_at ON orders(account, at);
     CREATE INDEX decisions_account_at ON decisions(account, at);
     """,
+    # 5 – Trading 212 a pravidlo PDT odstránené: zmaž ich uložené nastavenia a kľúče (história obchodov ostáva)
+    """
+    DELETE FROM settings WHERE key IN ('broker_name', 't212_demo_key_id', 't212_demo_secret',
+                                       't212_live_key_id', 't212_live_secret', 'respect_pdt');
+    """,
 ]
 
 

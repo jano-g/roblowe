@@ -147,3 +147,13 @@ def test_overview_does_not_hang_on_slow_broker(logged, monkeypatch):
     ov = logged.get("/api/overview").json()
     assert _t.monotonic() - t0 < 1.5
     assert "neodpovedá" in ov["error"] and ov["account"]["equity"] == 99000 and ov["account"]["snapshot_at"]
+
+
+def test_removed_settings_are_rejected_and_hidden(logged):
+    s = logged.get("/api/settings").json()
+    assert "respect_pdt" not in s["settings"] and "broker_name" not in s["settings"]
+    assert not any(k.startswith("t212") for k in s["settings"])
+    r = logged.put("/api/settings", json={"values": {"respect_pdt": True}})
+    assert r.status_code == 400
+    ov = logged.get("/api/overview").json()
+    assert "daytrade_count" not in ov["account"] and ov["trades_today"] == 0

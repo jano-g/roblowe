@@ -11,11 +11,6 @@ from . import db
 OVERRIDABLE: dict[str, tuple[str, Any, str, str]] = {
     # Broker (mení sa cez POST /api/broker – vyžaduje heslo; nie cez PUT /api/settings)
     "trading_mode": ("TRADING_MODE", "dry", "str", "dry = len loguje, paper = fiktívne peniaze, live = skutočné peniaze."),
-    "broker_name": ("BROKER", "alpaca", "str", "Kde agent obchoduje: alpaca, trading212 alebo both (oba naraz). Dáta a správy sú vždy z Alpaca."),
-    "t212_demo_key_id": ("T212_DEMO_API_KEY", "", "str", "Trading 212 demo (Practice) API kľúč."),
-    "t212_demo_secret": ("T212_DEMO_API_SECRET", "", "secret", "Trading 212 demo API secret."),
-    "t212_live_key_id": ("T212_LIVE_API_KEY", "", "str", "Trading 212 live (Invest) API kľúč."),
-    "t212_live_secret": ("T212_LIVE_API_SECRET", "", "secret", "Trading 212 live API secret."),
     "alpaca_paper_key_id": ("ALPACA_PAPER_KEY_ID", "", "str", "Alpaca paper Key ID."),
     "alpaca_paper_secret": ("ALPACA_PAPER_SECRET_KEY", "", "secret", "Alpaca paper Secret Key."),
     "alpaca_live_key_id": ("ALPACA_LIVE_KEY_ID", "", "str", "Alpaca live Key ID (skutočný účet)."),
@@ -36,7 +31,6 @@ OVERRIDABLE: dict[str, tuple[str, Any, str, str]] = {
     "flatten_before_close_min": ("FLATTEN_BEFORE_CLOSE_MIN", "10", "int", "Koľko minút pred zatvorením burzy zavrieť všetko (žiadne pozície cez noc)."),
     "no_entry_after_close_min": ("NO_ENTRY_AFTER_CLOSE_MIN", "60", "int", "Neotváraj nové pozície, keď do zatvorenia zostáva menej minút."),
     "no_entry_first_min": ("NO_ENTRY_FIRST_MIN", "15", "int", "Neotváraj pozície prvých N minút po otvorení (najväčší chaos)."),
-    "respect_pdt": ("RESPECT_PDT", "1", "bool", "Pri equity < 25 000 USD nerob viac než 3 day-trady za 5 dní (pravidlo PDT)."),
     # Signály
     "buy_threshold": ("BUY_THRESHOLD", "0.55", "float", "Skóre, od ktorého agent kupuje (0–1)."),
     "sell_threshold": ("SELL_THRESHOLD", "-0.35", "float", "Skóre, pri ktorom zatvára pozíciu (−1–0)."),
@@ -65,11 +59,9 @@ OVERRIDABLE: dict[str, tuple[str, Any, str, str]] = {
 }
 
 SECRET_KEYS = {k for k, v in OVERRIDABLE.items() if v[2] == "secret"}
-BROKER_KEYS = {"trading_mode", "broker_name", "alpaca_paper_key_id", "alpaca_paper_secret", "alpaca_live_key_id",
-               "alpaca_live_secret", "anthropic_api_key", "t212_demo_key_id", "t212_demo_secret",
-               "t212_live_key_id", "t212_live_secret"}
+BROKER_KEYS = {"trading_mode", "alpaca_paper_key_id", "alpaca_paper_secret", "alpaca_live_key_id",
+               "alpaca_live_secret", "anthropic_api_key"}
 MODES = ("dry", "paper", "live")
-BROKERS = ("alpaca", "trading212", "both")
 
 _cache: dict[str, str] | None = None
 
@@ -167,10 +159,6 @@ def validate(key: str, value: Any) -> str:
         raise ValueError("Režim musí byť dry, paper alebo live.")
     if key == "trading_mode":
         return s.lower()
-    if key == "broker_name":
-        if s.lower() not in BROKERS:
-            raise ValueError("Broker musí byť alpaca, trading212 alebo both.")
-        return s.lower()
     if key == "notify_mode" and s not in ("trade", "daily", "both"):
         raise ValueError("Notifikácie: trade, daily alebo both.")
     if key == "analyst_effort" and s not in ("low", "medium", "high"):
@@ -193,36 +181,12 @@ def alpaca_creds(m: str | None = None) -> tuple[str, str]:
     return get("alpaca_paper_key_id"), get("alpaca_paper_secret")
 
 
-def broker_name() -> str:
-    b = str(raw("broker_name")).strip().lower()
-    return b if b in BROKERS else "alpaca"
-
-
-def t212_creds(m: str | None = None) -> tuple[str, str]:
-    """(api_key, api_secret) Trading 212. live → live kľúče, inak demo (Practice)."""
-    m = m or mode()
-    if m == "live":
-        return get("t212_live_key_id"), get("t212_live_secret")
-    return get("t212_demo_key_id"), get("t212_demo_secret")
-
-
-def missing_creds(broker: str, m: str) -> str | None:
-    """Slovenský popis, čo chýba pre broker+režim, alebo None."""
-    if broker == "both":
-        return missing_creds("alpaca", m) or missing_creds("trading212", m)
-    if m == "dry" and broker == "alpaca":
+def missing_creds(m: str) -> str | None:
+    """Slovenský popis, čo chýba pre režim, alebo None."""
+    if m == "dry":
         return None
-    akid, asec = alpaca_creds("paper" if broker == "trading212" else m)
-    if broker == "trading212":
-        if not (akid and asec):
-            return "Trading 212 potrebuje aj Alpaca paper kľúče – z Alpaca idú ceny, sviečky a správy."
-        tk, ts = t212_creds(m)
-        if not (tk and ts) and m != "dry":
-            return f"Chýbajú Trading 212 {'live' if m == 'live' else 'demo'} API kľúč a secret."
-        return None
-    if not (akid and asec):
-        return f"Chýbajú Alpaca {m} kľúče."
-    return None
+    kid, sec = alpaca_creds(m)
+    return None if (kid and sec) else f"Chýbajú Alpaca {m} kľúče."
 
 
 def set_many(values: dict[str, Any], clear: list[str], actor: str, allow_broker: bool = False) -> None:
