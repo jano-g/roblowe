@@ -41,8 +41,8 @@ def _current_account() -> str:
 def _account_param(account: str | None) -> str:
     """Zvolený účet pre štatistiky; neznámy/prázdny = aktuálny."""
     cur = _current_account()
-    if not account or account == cur:
-        return cur
+    if not account or account == cur or scheduler.engine_for(account):
+        return account or cur
     if account not in ACCOUNT_LABELS:
         raise ApiError("Neznámy účet")
     return account
@@ -50,15 +50,15 @@ def _account_param(account: str | None) -> str:
 
 def _accounts() -> list[dict]:
     """Účty, ktoré majú nejaké dáta, + aktuálny. Aktuálny prvý."""
-    cur = _current_account()
+    active = [e.account for e in scheduler.engines] or [_current_account()]
     keys = {r["account"] for r in db.q("SELECT DISTINCT account FROM days")} | \
            {r["account"] for r in db.q("SELECT DISTINCT account FROM orders")}
-    keys.discard(cur)
-    if cur != "fake":
+    keys -= set(active)
+    if "fake" not in active:
         keys.discard("fake")
     order = list(ACCOUNT_LABELS)
     rest = sorted(keys, key=lambda k: order.index(k) if k in order else 99)
-    return [{"key": k, "label": account_label(k), "current": k == cur} for k in [cur, *rest]]
+    return [{"key": k, "label": account_label(k), "current": k in active} for k in [*active, *rest]]
 
 
 @router.get("/me")
@@ -74,6 +74,8 @@ def me(request: Request):
         "broker": scheduler.broker.__class__.__name__ if scheduler.broker else None,
         "broker_name": settings.broker_name(),
         "account": acc, "account_label": account_label(acc), "accounts": _accounts(),
+        "active_accounts": [e.account for e in scheduler.engines],
+        "broker_label": " + ".join(account_label(e.account) for e in scheduler.engines),
         "last_cycle_at": scheduler.last_cycle_at.isoformat() if scheduler.last_cycle_at else None,
         "last_error": scheduler.last_error,
         "day": day, "clock": _clock(),
@@ -86,16 +88,18 @@ def me(request: Request):
 def overview(request: Request, account: str | None = None):
     _user(request)
     acc = _account_param(account)
-    live = acc == _current_account()
+    eng = scheduler.engine_for(acc)
+    live = eng is not None
     acct, positions, err = None, [], None
     if live:
         try:
-            a = scheduler.broker.account()
+            br = eng.broker
+            a = br.account()
             acct = {"equity": a.equity, "cash": a.cash, "last_equity": a.last_equity, "buying_power": a.buying_power,
                     "account_currency": a.account_currency, "fx_to_usd": a.fx_to_usd,
-                    "daytrade_count": a.daytrade_count, "pdt_applies": getattr(scheduler.broker, "pdt_applies", True),
+                    "daytrade_count": a.daytrade_count, "pdt_applies": getattr(br, "pdt_applies", True),
                     "pattern_day_trader": a.pattern_day_trader, "trading_blocked": a.trading_blocked}
-            positions = [p.__dict__ for p in scheduler.broker.positions()]
+            positions = [p.__dict__ for p in br.positions()]
         except Exception as e:  # noqa: BLE001
             err = f"Broker nedostupný: {e}"
     else:
@@ -169,6 +173,7 @@ def get_settings(request: Request):
     live_id, live_sec = settings.alpaca_creds("live")
     return {"settings": settings.public_view(), "mode": scheduler.mode, "wanted_mode": settings.mode(),
             "broker": scheduler.broker.__class__.__name__ if scheduler.broker else None,
+            "broker_label": " + ".join(account_label(e.account) for e in scheduler.engines),
             "analyst_key_set": bool(settings.get("anthropic_api_key")),
             "alpaca_paper_set": bool(paper_id and paper_sec), "alpaca_live_set": bool(live_id and live_sec),
             "broker_name": settings.broker_name(),
@@ -226,13 +231,17 @@ async def put_broker(request: Request):
                                                       "ip": auth.client_ip(request)})
     if scheduler.mode != old_mode or new_mode == "live":
         ntfy.notify("Roblowe: zmena režimu", f"{old_mode} → {scheduler.mode} (agent vypnutý, zapni ho ručne)", priority=4)
-    # over spojenie s brokerom
-    try:
-        a = scheduler.broker.account()
-        acct = {"equity": a.equity, "cash": a.cash, "account_currency": a.account_currency}
-    except Exception as e:  # noqa: BLE001
-        raise ApiError(f"Uložené, ale broker odmietol kľúče: {e}", 502)
-    return {"ok": True, "mode": scheduler.mode, "account": acct, "settings": settings.public_view()}
+    # over spojenie s každým brokerom
+    accounts = []
+    for e in scheduler.engines:
+        try:
+            a = e.broker.account()
+        except Exception as ex:  # noqa: BLE001
+            raise ApiError(f"Uložené, ale {account_label(e.account)} odmietol kľúče: {ex}", 502)
+        accounts.append({"account": e.account, "label": account_label(e.account), "equity": a.equity,
+                         "cash": a.cash, "account_currency": a.account_currency})
+    return {"ok": True, "mode": scheduler.mode, "account": accounts[0], "accounts": accounts,
+            "settings": settings.public_view()}
 
 
 @router.post("/agent/toggle")
@@ -240,7 +249,7 @@ async def agent_toggle(request: Request):
     u = _user(request)
     body = await request.json()
     enabled = bool(body.get("enabled"))
-    if enabled and scheduler.mode == "live" and body.get("confirm") != "LIVE":
+    if enabled and any(e.mode == "live" for e in scheduler.engines) and body.get("confirm") != "LIVE":
         raise ApiError("Zapnutie v live režime vyžaduje potvrdenie textom LIVE.")
     settings.set_many({"agent_enabled": "1" if enabled else "0"}, [], u["username"])
     ntfy.notify("Roblowe", "Agent zapnutý." if enabled else "Agent vypnutý.")
@@ -252,9 +261,9 @@ def agent_cycle(request: Request):
     u = _user(request)
     if not scheduler.engine:
         raise ApiError("Agent ešte nebeží", 503)
-    rep = scheduler.run_cycle_now()
-    db.log_history(u["username"], "manual_cycle", {"status": rep["status"]})
-    return {"ok": True, "report": rep}
+    reports = scheduler.run_cycle_now()
+    db.log_history(u["username"], "manual_cycle", {r["account"]: r["status"] for r in reports})
+    return {"ok": True, "report": reports[0], "reports": reports}
 
 
 @router.post("/agent/panic")
@@ -263,20 +272,23 @@ async def agent_panic(request: Request):
     body = await request.json()
     if body.get("confirm") != "STOP":
         raise ApiError("Potvrď textom STOP.")
-    n = scheduler.engine.panic(u["username"])
+    n = sum(e.panic(u["username"]) for e in scheduler.engines)
     ntfy.notify("Roblowe: STOP", f"Ručne zatvorené {n} pozícií, agent vypnutý.")
     return {"ok": True, "closed": n}
 
 
 @router.post("/positions/{symbol}/close")
-def close_position(request: Request, symbol: str):
+def close_position(request: Request, symbol: str, account: str | None = None):
     u = _user(request)
     symbol = symbol.upper()[:10]
-    pos = next((p for p in scheduler.broker.positions() if p.symbol == symbol), None)
+    eng = scheduler.engine_for(_account_param(account))
+    if not eng:
+        raise ApiError("Na tomto účte agent teraz neobchoduje.", 400)
+    pos = next((p for p in eng.broker.positions() if p.symbol == symbol), None)
     if not pos:
         raise ApiError("Pozícia neexistuje", 404)
-    o = scheduler.engine.close(pos, f"ručne ({u['username']})")
-    db.log_history(u["username"], "manual_close", {"symbol": symbol})
+    o = eng.close(pos, f"ručne ({u['username']})")
+    db.log_history(u["username"], "manual_close", {"symbol": symbol, "account": eng.account})
     return {"ok": True, "order": o}
 
 
@@ -308,12 +320,16 @@ async def notify_test(request: Request):
 def notify_summary(request: Request):
     """Pošle súhrn posledného obchodného dňa hneď (test / náhľad)."""
     _user(request)
-    day = db.row("SELECT * FROM days WHERE account=? ORDER BY date DESC LIMIT 1", (_current_account(),))
-    if not day or not scheduler.engine:
+    sent = []
+    for e in scheduler.engines:
+        day = db.row("SELECT * FROM days WHERE account=? ORDER BY date DESC LIMIT 1", (e.account,))
+        if day:
+            title, text = e.build_daily_summary(day)
+            ntfy.notify(title, text)
+            sent.append(title)
+    if not sent:
         raise ApiError("Zatiaľ nie je žiadny obchodný deň.")
-    title, text = scheduler.engine.build_daily_summary(day)
-    ntfy.notify(title, text)
-    return {"ok": True, "title": title, "text": text}
+    return {"ok": True, "title": " | ".join(sent), "text": ""}
 
 
 @router.get("/backups")

@@ -11,7 +11,7 @@ from . import db
 OVERRIDABLE: dict[str, tuple[str, Any, str, str]] = {
     # Broker (mení sa cez POST /api/broker – vyžaduje heslo; nie cez PUT /api/settings)
     "trading_mode": ("TRADING_MODE", "dry", "str", "dry = len loguje, paper = fiktívne peniaze, live = skutočné peniaze."),
-    "broker_name": ("BROKER", "alpaca", "str", "Kde agent obchoduje: alpaca alebo trading212. Dáta a správy sú vždy z Alpaca."),
+    "broker_name": ("BROKER", "alpaca", "str", "Kde agent obchoduje: alpaca, trading212 alebo both (oba naraz). Dáta a správy sú vždy z Alpaca."),
     "t212_demo_key_id": ("T212_DEMO_API_KEY", "", "str", "Trading 212 demo (Practice) API kľúč."),
     "t212_demo_secret": ("T212_DEMO_API_SECRET", "", "secret", "Trading 212 demo API secret."),
     "t212_live_key_id": ("T212_LIVE_API_KEY", "", "str", "Trading 212 live (Invest) API kľúč."),
@@ -69,7 +69,7 @@ BROKER_KEYS = {"trading_mode", "broker_name", "alpaca_paper_key_id", "alpaca_pap
                "alpaca_live_secret", "anthropic_api_key", "t212_demo_key_id", "t212_demo_secret",
                "t212_live_key_id", "t212_live_secret"}
 MODES = ("dry", "paper", "live")
-BROKERS = ("alpaca", "trading212")
+BROKERS = ("alpaca", "trading212", "both")
 
 _cache: dict[str, str] | None = None
 
@@ -169,7 +169,7 @@ def validate(key: str, value: Any) -> str:
         return s.lower()
     if key == "broker_name":
         if s.lower() not in BROKERS:
-            raise ValueError("Broker musí byť alpaca alebo trading212.")
+            raise ValueError("Broker musí byť alpaca, trading212 alebo both.")
         return s.lower()
     if key == "notify_mode" and s not in ("trade", "daily", "both"):
         raise ValueError("Notifikácie: trade, daily alebo both.")
@@ -208,6 +208,8 @@ def t212_creds(m: str | None = None) -> tuple[str, str]:
 
 def missing_creds(broker: str, m: str) -> str | None:
     """Slovenský popis, čo chýba pre broker+režim, alebo None."""
+    if broker == "both":
+        return missing_creds("alpaca", m) or missing_creds("trading212", m)
     if m == "dry" and broker == "alpaca":
         return None
     akid, asec = alpaca_creds("paper" if broker == "trading212" else m)

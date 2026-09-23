@@ -45,6 +45,13 @@ paper kľúče, vklad na Alpaca netreba.
 | Stop-loss a cieľ | bracket objednávka u brokera | stop-loss u brokera (platí do zrušenia), cieľ stráži agent každý cyklus |
 | Skúšobný účet | paper | demo (Practice) |
 
+**Oboje naraz (porovnanie).** Broker *Oboje naraz* obchoduje rovnaké signály súčasne na Alpaca aj
+Trading 212 (v režime paper = Alpaca paper + Trading 212 demo). Každý účet má vlastné limity rizika,
+denný limit straty, dni, krivku equity a objednávky; na Prehľade a v Obchodoch prepínaš účet hore.
+Správy analyzuje Claude raz za cyklus pre oba účty. STOP zavrie pozície na oboch. Push notifikácie
+majú v titulku názov účtu. Výsledky nebudú rovnaké – iná veľkosť účtu, pravidlo PDT len na Alpaca,
+na Trading 212 cieľ stráži agent a stop je samostatná objednávka.
+
 **Trading 212 a mena účtu.** API obchoduje len v primárnej mene účtu. Pri účte v EUR sa pri každom
 nákupe aj predaji americkej akcie platí prevod 0,15 %. V appke Trading 212 nastav Currency options →
 nákup aj predaj na *Asset currency* a po prvých obchodoch na demo účte over v histórii, či sa

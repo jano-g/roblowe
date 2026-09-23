@@ -21,6 +21,9 @@ tvrdé rizikové mantinely (`app/strategy/risk.py`) → bracket objednávky (sto
 - Štatistiky sú per účet (`account_key`: alpaca:paper|alpaca:live|trading212:demo|trading212:live|fake):
   `days` (PK account+date), `equity`, `orders`, `decisions` majú stĺpec `account`; engine píše/číta
   len `self.account`, API berie `?account=` (default aktuálny). Správy od Claude sú spoločné.
+- `broker_name = both`: `scheduler.engines` = jeden Engine na účet (zdieľaný `NewsState` → jedna
+  analýza správ), `scheduler.engine` = prvý (hodiny, hlavička), `engine_for(account)` pre API.
+  Chyba jedného účtu v cykle nezastaví ostatné.
 - Stratégia: `signals.py` (EMA/RSI/ATR/VWAP → skóre), `analyst.py` (Claude, štruktúrovaný JSON),
   `risk.py` (sizing, denná strata, PDT), `engine.py` (poradie krokov je zámerné a nemenné).
 - `.env` je základ, `settings.OVERRIDABLE` sa dá prepísať v Nastaveniach (DB vyhráva); tajomstvá

@@ -21,6 +21,15 @@ NEWS_TTL = timedelta(hours=4)
 NEWS_LOOKBACK = timedelta(hours=3)
 
 
+class NewsState:
+    """Pohľady zo správ zdieľané medzi enginmi (pri obchodovaní na viacerých účtoch naraz sa správy
+    analyzujú raz a použijú všetky účty)."""
+
+    def __init__(self):
+        self.views: dict[str, SymbolView] = {}
+        self.market_note = ""
+
+
 @dataclass
 class CycleReport:
     status: str
@@ -38,17 +47,37 @@ class CycleReport:
 
 class Engine:
     def __init__(self, broker: Broker, analyst: ClaudeAnalyst | None = None, mode: str = "dry",
-                 notify: Callable[[str, str], None] | None = None, now: Callable[[], datetime] | None = None):
+                 notify: Callable[[str, str], None] | None = None, now: Callable[[], datetime] | None = None,
+                 news: NewsState | None = None):
         self.broker = broker
         self.account = getattr(broker, "account_key", "fake")
         self.analyst = analyst
         self.mode = mode
-        self.notify = notify or (lambda title, msg: None)
+        _send = notify or (lambda title, msg: None)
+        _label = account_label(self.account)
+        # názov účtu v titulku – pri obchodovaní na viacerých účtoch naraz vidíš, odkiaľ správa je
+        self.notify = lambda title, msg: _send(f"{title} · {_label}", msg)
         self._now = now or (lambda: datetime.now(timezone.utc))
-        self.news_views: dict[str, SymbolView] = {}
-        self.market_note = ""
+        self.news = news or NewsState()
         self.last_report: CycleReport | None = None
-        self._load_recent_analysis()
+        if not self.news.views:
+            self._load_recent_analysis()
+
+    @property
+    def news_views(self) -> dict[str, SymbolView]:
+        return self.news.views
+
+    @news_views.setter
+    def news_views(self, v: dict[str, SymbolView]) -> None:
+        self.news.views = v
+
+    @property
+    def market_note(self) -> str:
+        return self.news.market_note
+
+    @market_note.setter
+    def market_note(self, v: str) -> None:
+        self.news.market_note = v
 
     # -- pomocné -------------------------------------------------------------------
     def _load_recent_analysis(self) -> None:
