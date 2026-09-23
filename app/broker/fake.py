@@ -12,6 +12,7 @@ from .base import Account, Bar, Clock, NewsItem, OrderResult, Position
 class FakeBroker:
     native_bracket = True
     pdt_applies = True
+    account_key = "fake"
 
     def __init__(self, equity: float = 100_000.0, symbols: list[str] | None = None, seed: int = 7,
                  market_open: bool = True):

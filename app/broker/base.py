@@ -70,6 +70,7 @@ class OrderResult:
 class Broker(Protocol):
     native_bracket: bool   # broker drží stop-loss aj take-profit (inak cieľ stráži engine)
     pdt_applies: bool      # americké pravidlo Pattern Day Trader
+    account_key: str       # "alpaca:paper" | "alpaca:live" | "trading212:demo" | "trading212:live" | "fake"
 
     def account(self) -> Account: ...
     def positions(self) -> list[Position]: ...
@@ -83,3 +84,16 @@ class Broker(Protocol):
     def close_all(self) -> None: ...
     def cancel_all_orders(self) -> None: ...
     def place_stop(self, symbol: str, qty: float, stop_price: float) -> OrderResult: ...
+
+
+ACCOUNT_LABELS = {
+    "alpaca:paper": "Alpaca paper",
+    "alpaca:live": "Alpaca live",
+    "trading212:demo": "Trading 212 demo",
+    "trading212:live": "Trading 212 live",
+    "fake": "Syntetické dáta",
+}
+
+
+def account_label(key: str) -> str:
+    return ACCOUNT_LABELS.get(key, key)

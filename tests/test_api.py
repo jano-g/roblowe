@@ -117,3 +117,18 @@ def test_legacy_env_alpaca_keys_are_paper_keys(monkeypatch):
     st.invalidate()
     assert st.alpaca_creds("paper") == ("PKLEGACY", "legacy-secret")
     assert st.alpaca_creds("live") == ("", "")
+
+
+def test_overview_per_account(logged):
+    from app import db
+    db.run("INSERT INTO days(account, date, start_equity, created_at) VALUES ('alpaca:paper', '2026-09-20', 100000, 'x')")
+    db.run("INSERT INTO equity(at, account, equity, cash) VALUES ('2026-09-20T18:00:00+00:00', 'alpaca:paper', 100960, 1000)")
+    me = logged.get("/api/me").json()
+    assert me["account"] == "fake" and [a["key"] for a in me["accounts"]] == ["fake", "alpaca:paper"]
+    cur = logged.get("/api/overview").json()
+    assert cur["live"] is True and all(d["account"] == "fake" for d in cur["days"])
+    old = logged.get("/api/overview?account=alpaca:paper").json()
+    assert old["live"] is False and old["account"]["equity"] == 100960 and old["positions"] == []
+    assert old["days"][0]["pnl_pct"] == 0.96
+    assert logged.get("/api/overview?account=evil").status_code == 400
+    assert logged.get("/api/orders?account=alpaca:paper").status_code == 200

@@ -34,6 +34,7 @@ class AlpacaBroker:
     def __init__(self, key_id: str, secret: str, trading_url: str, data_url: str = config.ALPACA_DATA_URL,
                  feed: str = config.ALPACA_FEED, timeout: float = 15.0):
         headers = {"APCA-API-KEY-ID": key_id, "APCA-API-SECRET-KEY": secret, "Accept": "application/json"}
+        self.account_key = "alpaca:live" if trading_url.rstrip("/") == config.ALPACA_LIVE_URL else "alpaca:paper"
         self._t = httpx.Client(base_url=trading_url, headers=headers, timeout=timeout)
         self._d = httpx.Client(base_url=data_url, headers=headers, timeout=timeout)
         self.feed = feed

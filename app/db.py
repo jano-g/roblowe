@@ -102,6 +102,30 @@ MIGRATIONS: list[str] = [
     DELETE FROM equity WHERE equity = 100000.0 AND cash = 100000.0
       AND at > (SELECT MIN(at) FROM equity WHERE equity != 100000.0);
     """,
+    # 4 – štatistiky zvlášť pre každý účet (broker + prostredie). Doterajšie dáta sú z Alpaca paper.
+    """
+    CREATE TABLE days_new (
+        account TEXT NOT NULL,
+        date TEXT NOT NULL,
+        start_equity REAL NOT NULL,
+        halted INTEGER NOT NULL DEFAULT 0,
+        halt_reason TEXT,
+        flattened INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        summary_sent INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (account, date)
+    );
+    INSERT INTO days_new(account, date, start_equity, halted, halt_reason, flattened, created_at, summary_sent)
+      SELECT 'alpaca:paper', date, start_equity, halted, halt_reason, flattened, created_at, summary_sent FROM days;
+    DROP TABLE days;
+    ALTER TABLE days_new RENAME TO days;
+    ALTER TABLE equity ADD COLUMN account TEXT NOT NULL DEFAULT 'alpaca:paper';
+    ALTER TABLE orders ADD COLUMN account TEXT NOT NULL DEFAULT 'alpaca:paper';
+    ALTER TABLE decisions ADD COLUMN account TEXT NOT NULL DEFAULT 'alpaca:paper';
+    CREATE INDEX equity_account_at ON equity(account, at);
+    CREATE INDEX orders_account_at ON orders(account, at);
+    CREATE INDEX decisions_account_at ON decisions(account, at);
+    """,
 ]
 
 

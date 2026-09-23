@@ -17,7 +17,10 @@ tvrdé rizikové mantinely (`app/strategy/risk.py`) → bracket objednávky (sto
 - Broker: `app/broker/alpaca.py` (REST cez httpx, trading + data + news), `trading212.py` (obchod na
   Trading 212, dáta/správy/hodiny z Alpaca; market + GTC stop, cieľ stráži engine, rate limiter,
   prepočet do USD cez `services/fx.py` = kurzy ECB), `fake.py` pre testy a dry bez kľúčov.
-  Rozhranie `base.py:Broker` s príznakmi `native_bracket` a `pdt_applies`. Výber: `settings.broker_name()`.
+  Rozhranie `base.py:Broker` s príznakmi `native_bracket`, `pdt_applies` a `account_key`. Výber: `settings.broker_name()`.
+- Štatistiky sú per účet (`account_key`: alpaca:paper|alpaca:live|trading212:demo|trading212:live|fake):
+  `days` (PK account+date), `equity`, `orders`, `decisions` majú stĺpec `account`; engine píše/číta
+  len `self.account`, API berie `?account=` (default aktuálny). Správy od Claude sú spoločné.
 - Stratégia: `signals.py` (EMA/RSI/ATR/VWAP → skóre), `analyst.py` (Claude, štruktúrovaný JSON),
   `risk.py` (sizing, denná strata, PDT), `engine.py` (poradie krokov je zámerné a nemenné).
 - `.env` je základ, `settings.OVERRIDABLE` sa dá prepísať v Nastaveniach (DB vyhráva); tajomstvá
@@ -53,6 +56,8 @@ Bez Alpaca kľúčov beží `FakeBroker` (syntetické dáta, burza „stále otv
 - `mins_since_open` počíta 6,5 h seansu – v skrátené dni (13:00 ET) je okno „prvých N minút“ mäkšie.
 - Alpaca IEX feed je bezplatný, ale zobrazuje len IEX objem; na SIP treba platený plán.
 - Bez ALPACA kľúčov v dry režime sú dáta syntetické – nič z toho nehovorí o reálnom trhu.
+- SPA: automatická obnova pri návrate do appky prekresľuje len Prehľad/Obchody/Správy (nikdy formulár);
+  neuložené hodnoty formulárov (okrem hesiel a kľúčov) drží `sessionStorage` (`draftify`).
 - Malé VPS (1.8 GiB): `mem_limit: 256m`; žiadne pandas/numpy.
 - Trading 212 API: bez cien/sviečok/správ, predaj = záporné quantity, objednávky nie sú idempotentné
   (pri timeoute NEopakovať), obchoduje len v primárnej mene účtu, limity per endpoint (summary 1/5 s).

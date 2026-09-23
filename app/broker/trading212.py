@@ -73,6 +73,7 @@ class Trading212Broker:
                  timeout: float = 20.0, transport: httpx.BaseTransport | None = None, rate_limit: bool = True):
         tok = base64.b64encode(f"{api_key}:{api_secret}".encode()).decode()
         self.env = env
+        self.account_key = f"trading212:{'live' if env == 'live' else 'demo'}"
         self._c = httpx.Client(base_url=LIVE_URL if env == "live" else DEMO_URL, timeout=timeout, transport=transport,
                                headers={"Authorization": f"Basic {tok}", "Accept": "application/json"})
         self.data = data

@@ -188,7 +188,7 @@ def test_notify_mode_trade_sends_per_trade():
 def test_day_base_is_broker_last_equity_and_syncs():
     fb, eng = make_engine()
     # deň založený skôr so zlým základom (napr. zo syntetických dát)
-    db.run("INSERT INTO days(date, start_equity, created_at) VALUES ('2026-09-18', 100000, 'x')")
+    db.run("INSERT INTO days(account, date, start_equity, created_at) VALUES ('fake', '2026-09-18', 100000, 'x')")
     fb._cash = 100_763
     fb.last_equity = 100_960  # včerajšie zatvorenie
     fb.set_bars("AAA", trend_bars(-0.1))
@@ -221,3 +221,19 @@ def test_leftover_position_from_previous_day_is_closed():
     eng.cycle()
     assert "OLD" not in {p.symbol for p in fb.positions()}
     assert "zostatok" in db.row("SELECT reason FROM decisions WHERE symbol='OLD' AND action='sell'")["reason"]
+
+
+def test_stats_are_separate_per_account():
+    fb, eng = make_engine()
+    fb.set_bars("AAA", trend_bars(-0.1))
+    eng.cycle()  # účet "fake", 100 000
+    fb2 = FakeBroker(equity=5_732)
+    fb2.account_key = "trading212:demo"
+    fb2.clock = fb.clock
+    fb2.set_bars("AAA", trend_bars(-0.1))
+    eng2 = Engine(fb2, None, "paper", notify=lambda t, m: None, now=lambda: NOW)
+    rep = eng2.cycle()
+    assert rep.day_pnl_pct == 0.0  # nie −94 %
+    rows = {r["account"]: r["start_equity"] for r in db.rows("SELECT account, start_equity FROM days")}
+    assert rows == {"fake": 100_000, "trading212:demo": 5_732}
+    assert {r["account"] for r in db.rows("SELECT DISTINCT account FROM equity")} == {"fake", "trading212:demo"}

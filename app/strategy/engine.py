@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Callable
 
 from .. import config, db, settings
-from ..broker.base import Broker, NewsItem, Position
+from ..broker.base import Broker, NewsItem, Position, account_label
 from . import risk, signals
 from .analyst import Analysis, ClaudeAnalyst, SymbolView, parse_analysis
 
@@ -40,6 +40,7 @@ class Engine:
     def __init__(self, broker: Broker, analyst: ClaudeAnalyst | None = None, mode: str = "dry",
                  notify: Callable[[str, str], None] | None = None, now: Callable[[], datetime] | None = None):
         self.broker = broker
+        self.account = getattr(broker, "account_key", "fake")
         self.analyst = analyst
         self.mode = mode
         self.notify = notify or (lambda title, msg: None)
@@ -73,18 +74,19 @@ class Engine:
         return now.astimezone(config.MARKET_TZ).strftime("%Y-%m-%d")
 
     def _ensure_day(self, date: str, equity: float) -> dict:
-        day = db.row("SELECT * FROM days WHERE date=?", (date,))
+        day = db.row("SELECT * FROM days WHERE account=? AND date=?", (self.account, date))
         if day:
             return day
         with db.tx():
-            db.run("INSERT INTO days(date, start_equity, created_at) VALUES (?,?,?)", (date, equity, db.now_iso()))
-            db.log_history("agent", "day_started", {"date": date, "start_equity": equity})
-        return db.row("SELECT * FROM days WHERE date=?", (date,))
+            db.run("INSERT INTO days(account, date, start_equity, created_at) VALUES (?,?,?,?)",
+                   (self.account, date, equity, db.now_iso()))
+            db.log_history("agent", "day_started", {"account": self.account, "date": date, "start_equity": equity})
+        return db.row("SELECT * FROM days WHERE account=? AND date=?", (self.account, date))
 
     def _decide(self, symbol: str, action: str, reason: str, *, price=None, tech=None, news=None, score=None,
                 details=None) -> dict:
         d = {
-            "at": self._ts(), "symbol": symbol, "price": price,
+            "at": self._ts(), "account": self.account, "symbol": symbol, "price": price,
             "tech_score": tech.score if tech else None,
             "news_score": news.sentiment if news else None,
             "news_confidence": news.confidence if news else None,
@@ -92,16 +94,16 @@ class Engine:
             "details": json.dumps(details, ensure_ascii=False) if details else None,
         }
         db.run(
-            "INSERT INTO decisions(at,symbol,price,tech_score,news_score,news_confidence,score,action,reason,details) "
-            "VALUES (:at,:symbol,:price,:tech_score,:news_score,:news_confidence,:score,:action,:reason,:details)", d)
+            "INSERT INTO decisions(at,account,symbol,price,tech_score,news_score,news_confidence,score,action,reason,details) "
+            "VALUES (:at,:account,:symbol,:price,:tech_score,:news_score,:news_confidence,:score,:action,:reason,:details)", d)
         return d
 
     def _order(self, symbol: str, side: str, qty: float, kind: str, *, price=None, stop=None, tp=None,
                broker_id=None, status="submitted", note=None) -> dict:
-        o = {"at": self._ts(), "mode": self.mode, "broker_id": broker_id, "symbol": symbol, "side": side, "qty": qty,
+        o = {"at": self._ts(), "account": self.account, "mode": self.mode, "broker_id": broker_id, "symbol": symbol, "side": side, "qty": qty,
              "kind": kind, "price": price, "stop_price": stop, "take_profit": tp, "status": status, "note": note}
-        db.run("INSERT INTO orders(at,mode,broker_id,symbol,side,qty,kind,price,stop_price,take_profit,status,note) "
-               "VALUES (:at,:mode,:broker_id,:symbol,:side,:qty,:kind,:price,:stop_price,:take_profit,:status,:note)", o)
+        db.run("INSERT INTO orders(at,account,mode,broker_id,symbol,side,qty,kind,price,stop_price,take_profit,status,note) "
+               "VALUES (:at,:account,:mode,:broker_id,:symbol,:side,:qty,:kind,:price,:stop_price,:take_profit,:status,:note)", o)
         return o
 
     def _live(self) -> bool:
@@ -227,10 +229,11 @@ class Engine:
         day = self._ensure_day(date, base)
         if acct.last_equity > 0 and abs(day["start_equity"] - acct.last_equity) > 0.01:
             with db.tx():
-                db.run("UPDATE days SET start_equity=? WHERE date=?", (acct.last_equity, date))
+                db.run("UPDATE days SET start_equity=? WHERE account=? AND date=?", (acct.last_equity, self.account, date))
                 db.log_history("agent", "day_start_synced", {"date": date, "old": day["start_equity"], "new": acct.last_equity})
             day["start_equity"] = acct.last_equity
-        db.run("INSERT INTO equity(at, equity, cash) VALUES (?,?,?)", (self._ts(), acct.equity, acct.cash))
+        db.run("INSERT INTO equity(at, account, equity, cash) VALUES (?,?,?,?)",
+               (self._ts(), self.account, acct.equity, acct.cash))
         rep.equity = acct.equity
         hit, pnl_pct = risk.daily_loss_hit(day["start_equity"], acct.equity, settings.get("daily_loss_limit_pct"))
         rep.day_pnl_pct = round(pnl_pct, 2)
@@ -256,7 +259,7 @@ class Engine:
                             f"{', '.join(p.symbol for p in left)}. Skontroluj Alpaca.")
             elif not day["flattened"]:
                 with db.tx():
-                    db.run("UPDATE days SET flattened=1 WHERE date=?", (date,))
+                    db.run("UPDATE days SET flattened=1 WHERE account=? AND date=?", (self.account, date))
             rep.status = "flattened"
             self.last_report = rep
             return rep
@@ -266,7 +269,8 @@ class Engine:
         if self._live() and positions:
             d0 = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=config.MARKET_TZ).astimezone(timezone.utc).isoformat()
             today_entries = {r["symbol"] for r in db.q(
-                "SELECT symbol FROM orders WHERE kind='entry' AND status!='rejected' AND at >= ?", (d0,))}
+                "SELECT symbol FROM orders WHERE account=? AND kind='entry' AND status!='rejected' AND at >= ?",
+                (self.account, d0))}
             for p in list(positions):
                 if p.symbol not in today_entries:
                     why = "zostatok bez dnešného vstupu agenta (z predošlého dňa alebo ručný nákup)"
@@ -280,7 +284,7 @@ class Engine:
         if hit and not day["halted"]:
             reason = f"denná strata {pnl_pct:.2f} % prekročila limit {settings.get('daily_loss_limit_pct')} %"
             with db.tx():
-                db.run("UPDATE days SET halted=1, halt_reason=? WHERE date=?", (reason, date))
+                db.run("UPDATE days SET halted=1, halt_reason=? WHERE account=? AND date=?", (reason, self.account, date))
                 db.log_history("agent", "day_halted", {"date": date, "reason": reason})
             rep.orders += self.flatten_all(reason, positions)
             self.notify("Roblowe: STOP na dnes", reason)
@@ -315,8 +319,8 @@ class Engine:
         if not self._live():
             # dry režim: virtuálne pozície = dnešné dry vstupy bez následného výstupu (inak by kupoval každý cyklus)
             day_start = clock.now.astimezone(config.MARKET_TZ).replace(hour=0, minute=0, second=0, microsecond=0)
-            for r in db.q("SELECT symbol, kind FROM orders WHERE mode='dry' AND at >= ? ORDER BY id",
-                          (day_start.astimezone(timezone.utc).isoformat(),)):
+            for r in db.q("SELECT symbol, kind FROM orders WHERE account=? AND mode='dry' AND at >= ? ORDER BY id",
+                          (self.account, day_start.astimezone(timezone.utc).isoformat())):
                 if r["kind"] == "entry":
                     open_syms.add(r["symbol"])
                 else:
@@ -329,8 +333,8 @@ class Engine:
         if not native_bracket:
             # stop a cieľ z dnešných vstupov agenta (broker bez bracketu – cieľ stráži engine)
             d0 = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=config.MARKET_TZ).astimezone(timezone.utc).isoformat()
-            for r in db.q("SELECT symbol, stop_price, take_profit FROM orders WHERE kind='entry' AND status!='rejected' "
-                          "AND at >= ? ORDER BY id", (d0,)):
+            for r in db.q("SELECT symbol, stop_price, take_profit FROM orders WHERE account=? AND kind='entry' "
+                          "AND status!='rejected' AND at >= ? ORDER BY id", (self.account, d0)):
                 entry_levels[r["symbol"]] = {"stop": r["stop_price"], "tp": r["take_profit"]}
         entry_window = (mins_since_open >= settings.get("no_entry_first_min")
                         and mins_to_close > settings.get("no_entry_after_close_min"))
@@ -437,11 +441,14 @@ class Engine:
         d0 = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=config.MARKET_TZ)
         lo = d0.astimezone(timezone.utc).isoformat()
         hi = (d0 + timedelta(days=1)).astimezone(timezone.utc).isoformat()
-        last = db.row("SELECT equity FROM equity WHERE at >= ? AND at < ? ORDER BY at DESC LIMIT 1", (lo, hi))
+        acc = day.get("account", self.account)
+        last = db.row("SELECT equity FROM equity WHERE account=? AND at >= ? AND at < ? ORDER BY at DESC LIMIT 1",
+                      (acc, lo, hi))
         end_eq = last["equity"] if last else day["start_equity"]
         pnl = end_eq - day["start_equity"]
         pnl_pct = (pnl / day["start_equity"] * 100) if day["start_equity"] else 0.0
-        orders = db.rows("SELECT * FROM orders WHERE at >= ? AND at < ? AND status != 'rejected' ORDER BY id", (lo, hi))
+        orders = db.rows("SELECT * FROM orders WHERE account=? AND at >= ? AND at < ? AND status != 'rejected' ORDER BY id",
+                         (acc, lo, hi))
         entries = [o for o in orders if o["kind"] == "entry"]
         exits = [o for o in orders if o["kind"] in ("exit", "flatten")]
         entry_px: dict[str, list[float]] = {}
@@ -458,7 +465,7 @@ class Engine:
             losses += r <= 0
             lines.append(f"{o['symbol']} {r:+.0f} USD")
         mode = orders[0]["mode"] if orders else self.mode
-        title = f"Roblowe: deň {date[8:]}.{date[5:7]}. {pnl_pct:+.2f} %"
+        title = f"Roblowe: deň {date[8:]}.{date[5:7]}. {pnl_pct:+.2f} % · {account_label(acc)}"
         usd = lambda v: f"{v:,.0f}".replace(",", " ")  # noqa: E731
         parts = [f"Equity {usd(end_eq)} USD ({'+' if pnl >= 0 else '−'}{usd(abs(pnl))} USD, {pnl_pct:+.2f} %)",
                  f"Obchody: {len(entries)} vstupov, {len(exits)} výstupov" + (f", {wins} v pluse / {losses} v mínuse" if exits else "")]
@@ -476,12 +483,13 @@ class Engine:
         """Po zatvorení burzy pošle jeden súhrn za každý deň, ktorý ho ešte nemá."""
         today = self.trading_date(now)
         sent = 0
-        for day in db.rows("SELECT * FROM days WHERE summary_sent=0 AND date <= ? ORDER BY date", (today,)):
+        for day in db.rows("SELECT * FROM days WHERE account=? AND summary_sent=0 AND date <= ? ORDER BY date",
+                           (self.account, today)):
             if settings.get("notify_mode") in ("daily", "both"):
                 title, text = self.build_daily_summary(day)
                 self.notify(title, text)
             with db.tx():
-                db.run("UPDATE days SET summary_sent=1 WHERE date=?", (day["date"],))
+                db.run("UPDATE days SET summary_sent=1 WHERE account=? AND date=?", (self.account, day["date"]))
                 db.log_history("agent", "daily_summary", {"date": day["date"]})
             sent += 1
         return sent
@@ -502,9 +510,9 @@ class Engine:
                 log.exception("cancel_all_orders zlyhalo")
         date = self.trading_date(self._now())
         with db.tx():
-            db.run("INSERT INTO days(date, start_equity, halted, halt_reason, created_at) VALUES (?,?,1,?,?) "
-                   "ON CONFLICT(date) DO UPDATE SET halted=1, halt_reason=excluded.halt_reason",
-                   (date, equity, f"ručný STOP ({actor})", db.now_iso()))
+            db.run("INSERT INTO days(account, date, start_equity, halted, halt_reason, created_at) VALUES (?,?,?,1,?,?) "
+                   "ON CONFLICT(account, date) DO UPDATE SET halted=1, halt_reason=excluded.halt_reason",
+                   (self.account, date, equity, f"ručný STOP ({actor})", db.now_iso()))
             db.log_history(actor, "panic", {"positions": len(positions)})
         settings.set_many({"agent_enabled": "0"}, [], actor)
         return len(positions)

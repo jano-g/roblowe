@@ -87,8 +87,24 @@
   }
 
   let me = null;
+  let viewAccount = null;
+  function loadViewAccount() {
+    let seenCur = null;
+    try { viewAccount = localStorage.getItem('roblowe:account'); seenCur = localStorage.getItem('roblowe:account-cur'); } catch { viewAccount = null; }
+    // po prepnutí brokera ukáž najprv nový aktuálny účet
+    if (me && seenCur !== me.account) { viewAccount = me.account; try { localStorage.setItem('roblowe:account-cur', me.account); localStorage.setItem('roblowe:account', me.account); } catch {} }
+    if (!me || !me.accounts.some(a => a.key === viewAccount)) viewAccount = me ? me.account : null;
+  }
+  function setViewAccount(k) { viewAccount = k; try { localStorage.setItem('roblowe:account', k); } catch {} route(); }
+  function accountPicker() {
+    if (!me || me.accounts.length < 2) return null;
+    return el('div', { class: 'row' }, el('span', { class: 'muted' }, 'Účet:'),
+      el('select', { style: { width: 'auto' }, onchange: (e) => setViewAccount(e.target.value) },
+        ...me.accounts.map(a => el('option', { value: a.key, selected: a.key === viewAccount }, a.label + (a.current ? ' (aktuálny)' : '')))));
+  }
   async function loadMe() {
     me = await api('/me');
+    loadViewAccount();
     MODE = me.mode;
     const badge = $('#modeBadge'); badge.textContent = me.mode; badge.className = 'mode mode-' + me.mode;
     document.body.dataset.mode = me.mode;
@@ -138,38 +154,43 @@
   }
   async function viewOverview(root) {
     mount(root, el('div', { class: 'skeleton' }));
-    const ov = await api('/overview');
-    const a = ov.account; const d = me.day;
+    const ov = await api('/overview?account=' + encodeURIComponent(viewAccount || ''));
+    const a = ov.account; const d = ov.today;
     const dayBase = a && a.last_equity > 0 ? a.last_equity : (d && d.start_equity);
-    const dayPnl = a && dayBase ? (a.equity / dayBase - 1) * 100 : null;
+    const dayPnl = ov.live && a && dayBase ? (a.equity / dayBase - 1) * 100 : null;
     const brokerTxt = me.broker === 'Trading212Broker' ? ' na Trading 212' : me.broker === 'AlpacaBroker' ? ' na Alpaca' : '';
     const banner = MODE === 'live' ? el('div', { class: 'banner live' }, `LIVE režim – agent obchoduje so skutočnými peniazmi${brokerTxt}.`)
       : MODE === 'dry' ? el('div', { class: 'banner warn' }, `Režim DRY – agent len rozhoduje a loguje, na burzu nič neposiela${me.broker === 'FakeBroker' ? ' (syntetické dáta, bez Alpaca kľúčov)' : ''}.`) : null;
     mount(root,
-      banner,
+      accountPicker(),
+      ov.live ? banner : el('div', { class: 'banner warn' }, `Prezeráš históriu účtu ${ov.account_label}. Agent teraz obchoduje na účte ${me.account_label}.`),
       el('div', { class: 'card' }, statusLine(), ov.market_note ? el('p', { class: 'muted', style: { margin: '8px 0 0' } }, 'Claude: ' + ov.market_note) : null),
       ov.error ? el('div', { class: 'banner warn' }, ov.error) : null,
       el('div', { class: 'tiles' },
-        el('div', { class: 'tile' }, el('div', { class: 'lbl' }, 'Equity'), el('div', { class: 'val' }, fmtUsd(a && a.equity))),
+        el('div', { class: 'tile' }, el('div', { class: 'lbl' }, ov.live ? 'Equity · ' + ov.account_label : 'Posledná equity ' + (a && a.snapshot_at ? fmtTime(a.snapshot_at) : '')), el('div', { class: 'val' }, fmtUsd(a && a.equity))),
         el('div', { class: 'tile' }, el('div', { class: 'lbl' }, 'Dnes'), el('div', { class: 'val ' + signCls(dayPnl) }, fmtPct(dayPnl))),
         el('div', { class: 'tile' }, el('div', { class: 'lbl' }, 'Hotovosť'), el('div', { class: 'val' }, fmtUsd(a && a.cash))),
-        el('div', { class: 'tile' }, el('div', { class: 'lbl' }, 'Day-trady (5 dní)'), el('div', { class: 'val ' + (a && a.equity < 25000 && a.daytrade_count >= 3 ? 'warn' : '') }, a ? a.daytrade_count : '–'))),
+        a && a.pdt_applies === false
+          ? el('div', { class: 'tile' }, el('div', { class: 'lbl' }, 'Obchody spolu'), el('div', { class: 'val' }, ov.trades && ov.trades.entries ? String(ov.trades.entries) : '0'))
+          : el('div', { class: 'tile' }, el('div', { class: 'lbl' }, 'Day-trady (5 dní)'), el('div', { class: 'val ' + (a && a.equity < 25000 && a.daytrade_count >= 3 ? 'warn' : '') }, a && a.daytrade_count != null ? a.daytrade_count : '–'))),
       a && a.account_currency && a.account_currency !== 'USD' ? el('p', { class: 'note' }, `Účet je v ${a.account_currency}. Sumy sú prepočítané na USD kurzom ECB (1 ${a.account_currency} = ${fmtNum(a.fx_to_usd, 4)} USD).`) : null,
       el('div', { class: 'card' }, el('h2', {}, 'Equity (30 dní)'), sparkline(ov.curve)),
-      el('div', { class: 'card' }, el('h2', {}, 'Otvorené pozície', el('span', { class: 'chip' }, String(ov.positions.length))),
+      !ov.live ? null : el('div', { class: 'card' }, el('h2', {}, 'Otvorené pozície', el('span', { class: 'chip' }, String(ov.positions.length))),
         ov.positions.length ? el('div', { class: 'table-wrap' }, el('table', {}, el('thead', {}, el('tr', {}, el('th', {}, 'Ticker'), el('th', { class: 'num' }, 'Ks'), el('th', { class: 'num' }, 'Vstup'), el('th', { class: 'num' }, 'Cena'), el('th', { class: 'num' }, 'P/L'), el('th', {}))),
           el('tbody', {}, ov.positions.map(p => el('tr', {}, el('td', {}, el('strong', {}, p.symbol)), el('td', { class: 'num' }, fmtNum(p.qty, 0)), el('td', { class: 'num' }, fmtNum(p.avg_entry)),
             el('td', { class: 'num' }, fmtNum(p.current_price)), el('td', { class: 'num ' + signCls(p.unrealized_pl) }, fmtUsd(p.unrealized_pl) + ' (' + fmtPct(p.unrealized_plpc * 100, 1) + ')'),
             el('td', {}, el('button', { class: 'btn small', onclick: () => closePos(p.symbol) }, 'Zavrieť')))))))
           : el('p', { class: 'empty' }, 'Žiadne otvorené pozície.')),
-      el('div', { class: 'card' }, el('h2', {}, 'Rýchle akcie'),
+      !ov.live ? null : el('div', { class: 'card' }, el('h2', {}, 'Rýchle akcie'),
         el('div', { class: 'row' },
           el('button', { class: 'btn', onclick: runCycle }, 'Vyhodnotiť teraz'),
           el('button', { class: 'btn danger', onclick: panic }, 'STOP – zavrieť všetko')),
         el('p', { class: 'note' }, 'STOP zavrie všetky pozície, zruší objednávky, zastaví dnešný deň a vypne agenta.')),
       el('div', { class: 'card' }, el('h2', {}, 'Posledné dni'),
-        ov.days.length ? el('div', { class: 'table-wrap' }, el('table', {}, el('thead', {}, el('tr', {}, el('th', {}, 'Deň'), el('th', { class: 'num' }, 'Štart equity'), el('th', {}, 'Stav'))),
-          el('tbody', {}, ov.days.map(x => el('tr', {}, el('td', {}, x.date), el('td', { class: 'num' }, fmtUsd(x.start_equity)), el('td', {}, x.halted ? el('span', { class: 'chip sell' }, 'zastavené') : x.flattened ? el('span', { class: 'chip' }, 'uzavreté') : el('span', { class: 'chip buy' }, 'beží')))))))
+        ov.days.length ? el('div', { class: 'table-wrap' }, el('table', {}, el('thead', {}, el('tr', {}, el('th', {}, 'Deň'), el('th', { class: 'num' }, 'Štart'), el('th', { class: 'num' }, 'Koniec'), el('th', { class: 'num' }, 'Výsledok'), el('th', {}, 'Stav'))),
+          el('tbody', {}, ov.days.map(x => el('tr', {}, el('td', { class: 'time' }, x.date), el('td', { class: 'num' }, fmtUsd(x.start_equity)), el('td', { class: 'num' }, fmtUsd(x.end_equity)),
+            el('td', { class: 'num ' + signCls(x.pnl_pct) }, fmtPct(x.pnl_pct)),
+            el('td', {}, x.halted ? el('span', { class: 'chip sell' }, 'zastavené') : x.flattened ? el('span', { class: 'chip' }, 'uzavreté') : el('span', { class: 'chip buy' }, 'beží')))))))
           : el('p', { class: 'empty' }, 'Zatiaľ žiadny obchodný deň.')));
   }
   async function closePos(symbol) {
@@ -189,7 +210,8 @@
   // -- Obchody ---------------------------------------------------------------------------------
   async function viewTrades(root) {
     mount(root, el('div', { class: 'skeleton' }));
-    const [o, d] = await Promise.all([api('/orders?limit=100'), api('/decisions?limit=150')]);
+    const q = '&account=' + encodeURIComponent(viewAccount || '');
+    const [o, d] = await Promise.all([api('/orders?limit=100' + q), api('/decisions?limit=150' + q)]);
     const filter = el('select', { onchange: () => renderDecisions(filter.value) }, el('option', { value: '' }, 'Všetky rozhodnutia'),
       ...['buy', 'sell', 'skip', 'hold'].map(a => el('option', { value: a }, ACTION[a])));
     const decBody = el('tbody');
@@ -203,6 +225,7 @@
     }
     renderDecisions('');
     mount(root,
+      accountPicker(),
       el('div', { class: 'card' }, el('h2', {}, 'Objednávky', el('span', { class: 'chip' }, String(o.items.length))),
         o.items.length ? el('div', { class: 'table-wrap' }, el('table', {}, el('thead', {}, el('tr', {}, el('th', {}, 'Čas'), el('th', {}, 'Ticker'), el('th', {}, 'Typ'), el('th', { class: 'num' }, 'Ks'), el('th', { class: 'num' }, 'Cena'), el('th', { class: 'num' }, 'Stop / Cieľ'), el('th', {}, 'Stav'), el('th', {}, 'Poznámka'))),
           el('tbody', {}, o.items.map(x => el('tr', {}, el('td', { class: 'time' }, fmtTime(x.at)), el('td', {}, el('strong', {}, x.symbol)),
@@ -278,15 +301,15 @@
     async function save() {
       const values = {};
       for (const [k, inp] of Object.entries(inputs)) values[k] = inp.type === 'checkbox' ? inp.checked : inp.value;
-      try { await api('/settings', { method: 'PUT', body: { values } }); toast('Nastavenia uložené.'); route(); } catch (e) { toast(e.message, true); }
+      try { await api('/settings', { method: 'PUT', body: { values } }); clearDrafts('f_'); toast('Nastavenia uložené.'); route(); } catch (e) { toast(e.message, true); }
     }
     // --- Broker: režim + kľúče, chránené heslom ---
     const B = S;
     const keyPh = (k, ph) => B[k].set ? `uložené (${B[k].value}), prázdne = nemeniť` : ph;
     const secPh = (k) => B[k].set ? '•••••• (uložené, prázdne = nemeniť)' : 'nenastavené';
-    const brokerSel = el('select', {}, el('option', { value: 'alpaca', selected: s.broker_name === 'alpaca' }, 'Alpaca (USA)'),
+    const brokerSel = el('select', { id: 'b_broker' }, el('option', { value: 'alpaca', selected: s.broker_name === 'alpaca' }, 'Alpaca (USA)'),
       el('option', { value: 'trading212', selected: s.broker_name === 'trading212' }, 'Trading 212 (EÚ)'));
-    const modeSel = el('select', {}, ...['dry', 'paper', 'live'].map(v => el('option', { value: v, selected: s.wanted_mode === v }, v === 'dry' ? 'dry – len loguje, nič neposiela' : v === 'paper' ? 'paper – fiktívne peniaze (Alpaca paper / Trading 212 demo)' : 'live – SKUTOČNÉ peniaze')));
+    const modeSel = el('select', { id: 'b_mode' }, ...['dry', 'paper', 'live'].map(v => el('option', { value: v, selected: s.wanted_mode === v }, v === 'dry' ? 'dry – len loguje, nič neposiela' : v === 'paper' ? 'paper – fiktívne peniaze (Alpaca paper / Trading 212 demo)' : 'live – SKUTOČNÉ peniaze')));
     const bIn = {
       anthropic_api_key: el('input', { type: 'password', placeholder: B.anthropic_api_key.set ? '•••••• (uložené, prázdne = nemeniť)' : 'sk-ant-…', autocomplete: 'new-password' }),
       alpaca_paper_key_id: el('input', { placeholder: keyPh('alpaca_paper_key_id', 'PK…'), autocomplete: 'off' }),
@@ -312,6 +335,7 @@
       }
       try {
         const r = await api('/broker', { method: 'POST', body: { values, password: bPw.value, confirm } });
+        clearDrafts('b_');
         const cur = r.account.account_currency && r.account.account_currency !== 'USD' ? ` (účet v ${r.account.account_currency}, prepočet kurzom ECB)` : '';
         toast(`Režim ${r.mode}, účet: ${fmtUsd(r.account.equity)}${cur}. Agent je vypnutý – zapni ho v hlavičke.`);
         await loadMe(); route();
@@ -362,6 +386,24 @@
       el('div', { class: 'row', style: { 'justify-content': 'flex-end' } }, el('button', { class: 'btn primary', onclick: save }, 'Uložiť nastavenia')),
       el('div', { class: 'card' }, el('h2', {}, 'Heslo'), el('div', { class: 'fields' }, el('label', { class: 'f' }, 'Staré heslo', pwOld), el('label', { class: 'f' }, 'Nové heslo', pwNew)),
         el('button', { class: 'btn small', onclick: async () => { try { await api('/password', { method: 'POST', body: { old: pwOld.value, new: pwNew.value } }); toast('Heslo zmenené, prihlás sa znova.'); setTimeout(() => location.href = '/login', 800); } catch (e) { toast(e.message, true); } } }, 'Zmeniť heslo')));
+    draftify(root);
+  }
+
+  // -- neuložené zmeny vo formulári ----------------------------------------------------------------
+  const DRAFT = 'roblowe:draft:';
+  function draftify(root) {
+    let restored = 0;
+    root.querySelectorAll('input[id], select[id]').forEach(inp => {
+      if (inp.type === 'password') return;  // heslá a tajné kľúče nikdy neukladáme
+      let v = null; try { v = sessionStorage.getItem(DRAFT + inp.id); } catch {}
+      if (v != null) { if (inp.type === 'checkbox') inp.checked = v === '1'; else inp.value = v; inp.dispatchEvent(new Event('change')); restored++; }
+      const save = () => { try { sessionStorage.setItem(DRAFT + inp.id, inp.type === 'checkbox' ? (inp.checked ? '1' : '0') : inp.value); } catch {} };
+      inp.addEventListener('input', save); inp.addEventListener('change', save);
+    });
+    if (restored) toast('Obnovil som tvoje neuložené zmeny.');
+  }
+  function clearDrafts(prefix) {
+    try { Object.keys(sessionStorage).filter(k => k.startsWith(DRAFT + (prefix || ''))).forEach(k => sessionStorage.removeItem(k)); } catch {}
   }
 
   // -- router --------------------------------------------------------------------------------------
@@ -371,7 +413,13 @@
     try { await r.view($('#main')); } catch (e) { if (e.message !== '401') mount($('#main'), el('div', { class: 'card' }, el('p', { class: 'error' }, e.message))); }
   }
   window.addEventListener('hashchange', route);
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) { loadMe().then(route).catch(() => {}); } });
-  setInterval(() => { if (!document.hidden && (location.hash || '#/') === '#/') loadMe().then(route).catch(() => {}); }, 60000);
+  // Návrat do appky / periodická obnova: prekresli len stránky bez formulárov a nikdy, keď je otvorený dialóg.
+  const AUTO_REFRESH = ['#/', '#/obchody', '#/spravy'];
+  function softRefresh() {
+    const h = location.hash || '#/';
+    loadMe().then(() => { if (AUTO_REFRESH.includes(h) && $('#sheet').hidden) route(); }).catch(() => {});
+  }
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) softRefresh(); });
+  setInterval(() => { if (!document.hidden && (location.hash || '#/') === '#/') softRefresh(); }, 60000);
   loadMe().then(route).catch(e => { if (e.message !== '401') toast(e.message, true); });
 })();
