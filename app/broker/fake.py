@@ -10,6 +10,9 @@ from .base import Account, Bar, Clock, NewsItem, OrderResult, Position
 
 
 class FakeBroker:
+    native_bracket = True
+    pdt_applies = True
+
     def __init__(self, equity: float = 100_000.0, symbols: list[str] | None = None, seed: int = 7,
                  market_open: bool = True):
         self._cash = equity
@@ -120,3 +123,9 @@ class FakeBroker:
 
     def cancel_all_orders(self) -> None:
         self._orders = []
+
+    def place_stop(self, symbol, qty, stop_price) -> OrderResult:
+        oid = f"fake-stop-{symbol}-{len(self.submitted) + 1}"
+        self._orders.append({"id": oid, "symbol": symbol, "type": "stop", "stop": stop_price})
+        self.submitted.append({"id": oid, "symbol": symbol, "qty": qty, "side": "stop", "stop": stop_price})
+        return OrderResult(broker_id=oid, status="new")

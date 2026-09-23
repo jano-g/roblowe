@@ -16,6 +16,8 @@ class Account:
     trading_blocked: bool = False
     currency: str = "USD"
     last_equity: float = 0.0  # equity pri zatvorení predošlého obchodného dňa (Alpaca)
+    account_currency: str = "USD"  # primárna mena účtu u brokera (hodnoty vyššie sú vždy v USD)
+    fx_to_usd: float = 1.0
 
 
 @dataclass
@@ -66,6 +68,9 @@ class OrderResult:
 
 
 class Broker(Protocol):
+    native_bracket: bool   # broker drží stop-loss aj take-profit (inak cieľ stráži engine)
+    pdt_applies: bool      # americké pravidlo Pattern Day Trader
+
     def account(self) -> Account: ...
     def positions(self) -> list[Position]: ...
     def clock(self) -> Clock: ...
@@ -77,3 +82,4 @@ class Broker(Protocol):
     def close_position(self, symbol: str) -> OrderResult: ...
     def close_all(self) -> None: ...
     def cancel_all_orders(self) -> None: ...
+    def place_stop(self, symbol: str, qty: float, stop_price: float) -> OrderResult: ...

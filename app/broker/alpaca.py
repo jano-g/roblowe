@@ -28,6 +28,9 @@ def _round_price(p: float) -> float:
 
 
 class AlpacaBroker:
+    native_bracket = True
+    pdt_applies = True
+
     def __init__(self, key_id: str, secret: str, trading_url: str, data_url: str = config.ALPACA_DATA_URL,
                  feed: str = config.ALPACA_FEED, timeout: float = 15.0):
         headers = {"APCA-API-KEY-ID": key_id, "APCA-API-SECRET-KEY": secret, "Accept": "application/json"}
@@ -169,3 +172,9 @@ class AlpacaBroker:
 
     def cancel_all_orders(self) -> None:
         self._call(self._t, "DELETE", "/v2/orders")
+
+    def place_stop(self, symbol: str, qty: float, stop_price: float) -> OrderResult:
+        body = {"symbol": symbol, "qty": str(int(qty)), "side": "sell", "type": "stop", "time_in_force": "day",
+                "stop_price": str(_round_price(stop_price))}
+        o = self._call(self._t, "POST", "/v2/orders", json=body)
+        return OrderResult(broker_id=o["id"], status=o.get("status", "accepted"))
