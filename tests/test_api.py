@@ -132,3 +132,18 @@ def test_overview_per_account(logged):
     assert old["days"][0]["pnl_pct"] == 0.96
     assert logged.get("/api/overview?account=evil").status_code == 400
     assert logged.get("/api/orders?account=alpaca:paper").status_code == 200
+
+
+def test_overview_does_not_hang_on_slow_broker(logged, monkeypatch):
+    import time as _t
+    from app.routers import api as api_mod
+    from app.scheduler import scheduler
+    from app import db
+    monkeypatch.setattr(api_mod, "BROKER_TIMEOUT", 0.3)
+    db.run("INSERT INTO equity(at, account, equity, cash) VALUES ('2026-09-22T19:00:00+00:00', 'fake', 99000, 99000)")
+    br = scheduler.engine.broker
+    monkeypatch.setattr(br, "account", lambda: _t.sleep(2))
+    t0 = _t.monotonic()
+    ov = logged.get("/api/overview").json()
+    assert _t.monotonic() - t0 < 1.5
+    assert "neodpovedá" in ov["error"] and ov["account"]["equity"] == 99000 and ov["account"]["snapshot_at"]

@@ -48,10 +48,17 @@
   }
 
   async function api(path, opts = {}) {
-    const r = await fetch('/api' + path, {
-      method: opts.method || 'GET', headers: { 'X-Requested-With': 'roblowe', ...(opts.body ? { 'Content-Type': 'application/json' } : {}) },
-      body: opts.body ? JSON.stringify(opts.body) : undefined,
-    });
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), opts.timeout || 45000);
+    let r;
+    try {
+      r = await fetch('/api' + path, {
+        method: opts.method || 'GET', headers: { 'X-Requested-With': 'roblowe', ...(opts.body ? { 'Content-Type': 'application/json' } : {}) },
+        body: opts.body ? JSON.stringify(opts.body) : undefined, signal: ctl.signal,
+      });
+    } catch (e) {
+      throw new Error(e.name === 'AbortError' ? 'Server neodpovedá. Skús obnoviť stránku o chvíľu.' : 'Spojenie so serverom zlyhalo.');
+    } finally { clearTimeout(timer); }
     if (r.status === 401) { location.href = '/login?next=' + encodeURIComponent(location.pathname + location.hash); throw new Error('401'); }
     const data = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(data.error || `Chyba ${r.status}`);
@@ -167,7 +174,7 @@
       el('div', { class: 'card' }, statusLine(), ov.market_note ? el('p', { class: 'muted', style: { margin: '8px 0 0' } }, 'Claude: ' + ov.market_note) : null),
       ov.error ? el('div', { class: 'banner warn' }, ov.error) : null,
       el('div', { class: 'tiles' },
-        el('div', { class: 'tile' }, el('div', { class: 'lbl' }, ov.live ? 'Equity · ' + ov.account_label : 'Posledná equity ' + (a && a.snapshot_at ? fmtTime(a.snapshot_at) : '')), el('div', { class: 'val' }, fmtUsd(a && a.equity))),
+        el('div', { class: 'tile' }, el('div', { class: 'lbl' }, ov.live && !(a && a.snapshot_at) ? 'Equity · ' + ov.account_label : 'Posledná equity ' + (a && a.snapshot_at ? fmtTime(a.snapshot_at) : '')), el('div', { class: 'val' }, fmtUsd(a && a.equity))),
         el('div', { class: 'tile' }, el('div', { class: 'lbl' }, 'Dnes'), el('div', { class: 'val ' + signCls(dayPnl) }, fmtPct(dayPnl))),
         el('div', { class: 'tile' }, el('div', { class: 'lbl' }, 'Hotovosť'), el('div', { class: 'val' }, fmtUsd(a && a.cash))),
         a && a.pdt_applies === false
@@ -199,7 +206,7 @@
   }
   async function runCycle() {
     try {
-      const r = await api('/agent/cycle', { method: 'POST', body: {} });
+      const r = await api('/agent/cycle', { method: 'POST', body: {}, timeout: 120000 });
       const label = (k) => (me.accounts.find(a => a.key === k) || { label: k }).label;
       toast(r.reports.map(x => (r.reports.length > 1 ? label(x.account) + ': ' : 'Cyklus: ') + x.status + (x.notes && x.notes[0] ? ' · ' + x.notes[0] : '')).join(' | '));
       await loadMe(); route();

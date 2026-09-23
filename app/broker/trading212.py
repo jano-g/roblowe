@@ -57,12 +57,13 @@ class _Limiter:
     def wait(self, key: tuple[str, str]) -> None:
         if not self.enabled or key not in RATE:
             return
+        # rezervuj si slot pod zámkom, ale spi mimo neho – pomalý endpoint nesmie blokovať ostatné
         with self._lock:
             now = time.monotonic()
-            delay = self._last.get(key, 0) + RATE[key] - now
-            if delay > 0:
-                time.sleep(delay)
-            self._last[key] = time.monotonic()
+            slot = max(now, self._last.get(key, 0) + RATE[key])
+            self._last[key] = slot
+        if slot > now:
+            time.sleep(slot - now)
 
 
 class Trading212Broker:
@@ -88,11 +89,15 @@ class Trading212Broker:
         key = (method, key_path or path)
         for attempt in range(2):
             self._lim.wait(key)
+            t0 = time.monotonic()
             try:
                 r = self._c.request(method, path, **kw)
             except httpx.HTTPError as e:
+                log.warning("T212 %s %s zlyhalo po %.1f s: %s", method, path, time.monotonic() - t0, e.__class__.__name__)
                 # objednávky nie sú idempotentné → pri timeoute NEopakuj
                 raise BrokerError(f"Trading 212 spojenie zlyhalo: {e.__class__.__name__}") from e
+            if time.monotonic() - t0 > 5:
+                log.warning("T212 %s %s trvalo %.1f s", method, path, time.monotonic() - t0)
             if r.status_code == 429 and attempt == 0 and method == "GET":
                 time.sleep(RATE.get(key, 5.0))
                 continue

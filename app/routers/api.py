@@ -1,6 +1,8 @@
 """JSON API pre SPA. Zápisy: CSRF hlavička (middleware), current_user, db.tx, log_history."""
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeout
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Request
@@ -11,6 +13,10 @@ from ..scheduler import scheduler
 from ..services import backup, ntfy
 
 router = APIRouter()
+
+# volania brokera z dashboardu idú cez malý pool s časovým limitom – pomalý broker nesmie zaseknúť stránku
+BROKER_TIMEOUT = 8.0
+_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="broker-ui")
 
 
 class ApiError(Exception):
@@ -92,16 +98,27 @@ def overview(request: Request, account: str | None = None):
     live = eng is not None
     acct, positions, err = None, [], None
     if live:
-        try:
-            br = eng.broker
+        br = eng.broker
+
+        def fetch():
             a = br.account()
-            acct = {"equity": a.equity, "cash": a.cash, "last_equity": a.last_equity, "buying_power": a.buying_power,
-                    "account_currency": a.account_currency, "fx_to_usd": a.fx_to_usd,
-                    "daytrade_count": a.daytrade_count, "pdt_applies": getattr(br, "pdt_applies", True),
-                    "pattern_day_trader": a.pattern_day_trader, "trading_blocked": a.trading_blocked}
-            positions = [p.__dict__ for p in br.positions()]
+            return ({"equity": a.equity, "cash": a.cash, "last_equity": a.last_equity, "buying_power": a.buying_power,
+                     "account_currency": a.account_currency, "fx_to_usd": a.fx_to_usd,
+                     "daytrade_count": a.daytrade_count, "pdt_applies": getattr(br, "pdt_applies", True),
+                     "pattern_day_trader": a.pattern_day_trader, "trading_blocked": a.trading_blocked},
+                    [p.__dict__ for p in br.positions()])
+        fut = _POOL.submit(fetch)
+        try:
+            acct, positions = fut.result(timeout=BROKER_TIMEOUT)
+        except FutureTimeout:
+            err = (f"{account_label(acc)} neodpovedá do {BROKER_TIMEOUT:.0f} s – zobrazujem posledný známy stav. "
+                   "Pozície sa načítajú pri ďalšom obnovení.")
         except Exception as e:  # noqa: BLE001
             err = f"Broker nedostupný: {e}"
+        if acct is None:
+            last = db.row("SELECT at, equity, cash FROM equity WHERE account=? ORDER BY at DESC LIMIT 1", (acc,))
+            if last:
+                acct = {"equity": last["equity"], "cash": last["cash"], "last_equity": 0, "snapshot_at": last["at"]}
     else:
         last = db.row("SELECT at, equity, cash FROM equity WHERE account=? ORDER BY at DESC LIMIT 1", (acc,))
         if last:
