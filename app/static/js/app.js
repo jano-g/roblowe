@@ -142,7 +142,8 @@
     const a = ov.account; const d = me.day;
     const dayBase = a && a.last_equity > 0 ? a.last_equity : (d && d.start_equity);
     const dayPnl = a && dayBase ? (a.equity / dayBase - 1) * 100 : null;
-    const banner = MODE === 'live' ? el('div', { class: 'banner live' }, 'LIVE režim – agent obchoduje so skutočnými peniazmi.')
+    const brokerTxt = me.broker === 'Trading212Broker' ? ' na Trading 212' : me.broker === 'AlpacaBroker' ? ' na Alpaca' : '';
+    const banner = MODE === 'live' ? el('div', { class: 'banner live' }, `LIVE režim – agent obchoduje so skutočnými peniazmi${brokerTxt}.`)
       : MODE === 'dry' ? el('div', { class: 'banner warn' }, `Režim DRY – agent len rozhoduje a loguje, na burzu nič neposiela${me.broker === 'FakeBroker' ? ' (syntetické dáta, bez Alpaca kľúčov)' : ''}.`) : null;
     mount(root,
       banner,
@@ -153,6 +154,7 @@
         el('div', { class: 'tile' }, el('div', { class: 'lbl' }, 'Dnes'), el('div', { class: 'val ' + signCls(dayPnl) }, fmtPct(dayPnl))),
         el('div', { class: 'tile' }, el('div', { class: 'lbl' }, 'Hotovosť'), el('div', { class: 'val' }, fmtUsd(a && a.cash))),
         el('div', { class: 'tile' }, el('div', { class: 'lbl' }, 'Day-trady (5 dní)'), el('div', { class: 'val ' + (a && a.equity < 25000 && a.daytrade_count >= 3 ? 'warn' : '') }, a ? a.daytrade_count : '–'))),
+      a && a.account_currency && a.account_currency !== 'USD' ? el('p', { class: 'note' }, `Účet je v ${a.account_currency}. Sumy sú prepočítané na USD kurzom ECB (1 ${a.account_currency} = ${fmtNum(a.fx_to_usd, 4)} USD).`) : null,
       el('div', { class: 'card' }, el('h2', {}, 'Equity (30 dní)'), sparkline(ov.curve)),
       el('div', { class: 'card' }, el('h2', {}, 'Otvorené pozície', el('span', { class: 'chip' }, String(ov.positions.length))),
         ov.positions.length ? el('div', { class: 'table-wrap' }, el('table', {}, el('thead', {}, el('tr', {}, el('th', {}, 'Ticker'), el('th', { class: 'num' }, 'Ks'), el('th', { class: 'num' }, 'Vstup'), el('th', { class: 'num' }, 'Cena'), el('th', { class: 'num' }, 'P/L'), el('th', {}))),
@@ -280,41 +282,67 @@
     }
     // --- Broker: režim + kľúče, chránené heslom ---
     const B = S;
-    const modeSel = el('select', {}, ...['dry', 'paper', 'live'].map(v => el('option', { value: v, selected: s.wanted_mode === v }, v === 'dry' ? 'dry – len loguje, nič neposiela' : v === 'paper' ? 'paper – fiktívne peniaze (Alpaca paper)' : 'live – SKUTOČNÉ peniaze')));
+    const keyPh = (k, ph) => B[k].set ? `uložené (${B[k].value}), prázdne = nemeniť` : ph;
+    const secPh = (k) => B[k].set ? '•••••• (uložené, prázdne = nemeniť)' : 'nenastavené';
+    const brokerSel = el('select', {}, el('option', { value: 'alpaca', selected: s.broker_name === 'alpaca' }, 'Alpaca (USA)'),
+      el('option', { value: 'trading212', selected: s.broker_name === 'trading212' }, 'Trading 212 (EÚ)'));
+    const modeSel = el('select', {}, ...['dry', 'paper', 'live'].map(v => el('option', { value: v, selected: s.wanted_mode === v }, v === 'dry' ? 'dry – len loguje, nič neposiela' : v === 'paper' ? 'paper – fiktívne peniaze (Alpaca paper / Trading 212 demo)' : 'live – SKUTOČNÉ peniaze')));
     const bIn = {
-      alpaca_paper_key_id: el('input', { placeholder: B.alpaca_paper_key_id.set ? `uložené (${B.alpaca_paper_key_id.value}), prázdne = nemeniť` : 'PK…', autocomplete: 'off' }),
-      alpaca_paper_secret: el('input', { type: 'password', placeholder: B.alpaca_paper_secret.set ? '•••••• (uložené, prázdne = nemeniť)' : 'nenastavené', autocomplete: 'new-password' }),
-      alpaca_live_key_id: el('input', { placeholder: B.alpaca_live_key_id.set ? `uložené (${B.alpaca_live_key_id.value}), prázdne = nemeniť` : 'AK…', autocomplete: 'off' }),
-      alpaca_live_secret: el('input', { type: 'password', placeholder: B.alpaca_live_secret.set ? '•••••• (uložené, prázdne = nemeniť)' : 'nenastavené', autocomplete: 'new-password' }),
       anthropic_api_key: el('input', { type: 'password', placeholder: B.anthropic_api_key.set ? '•••••• (uložené, prázdne = nemeniť)' : 'sk-ant-…', autocomplete: 'new-password' }),
+      alpaca_paper_key_id: el('input', { placeholder: keyPh('alpaca_paper_key_id', 'PK…'), autocomplete: 'off' }),
+      alpaca_paper_secret: el('input', { type: 'password', placeholder: secPh('alpaca_paper_secret'), autocomplete: 'new-password' }),
+      alpaca_live_key_id: el('input', { placeholder: keyPh('alpaca_live_key_id', 'AK…'), autocomplete: 'off' }),
+      alpaca_live_secret: el('input', { type: 'password', placeholder: secPh('alpaca_live_secret'), autocomplete: 'new-password' }),
+      t212_demo_key_id: el('input', { placeholder: keyPh('t212_demo_key_id', 'API kľúč z Practice účtu'), autocomplete: 'off' }),
+      t212_demo_secret: el('input', { type: 'password', placeholder: secPh('t212_demo_secret'), autocomplete: 'new-password' }),
+      t212_live_key_id: el('input', { placeholder: keyPh('t212_live_key_id', 'API kľúč z Invest účtu'), autocomplete: 'off' }),
+      t212_live_secret: el('input', { type: 'password', placeholder: secPh('t212_live_secret'), autocomplete: 'new-password' }),
     };
     const bPw = el('input', { type: 'password', autocomplete: 'current-password', placeholder: 'Tvoje heslo do appky' });
     async function saveBroker() {
-      const values = { trading_mode: modeSel.value };
+      const values = { trading_mode: modeSel.value, broker_name: brokerSel.value };
       for (const [k, inp] of Object.entries(bIn)) if (inp.value.trim()) values[k] = inp.value.trim();
       if (!bPw.value) { toast('Zadaj heslo.', true); return; }
       let confirm = null;
       if (modeSel.value === 'live') {
-        const ok = await confirmSheet('Prepnúť na LIVE', 'Agent bude po zapnutí obchodovať so skutočnými peniazmi na tvojom Alpaca účte. Napíš LIVE.', { danger: true, typed: 'LIVE', ok: 'Prepnúť na live' });
+        const where = brokerSel.value === 'trading212' ? 'Trading 212' : 'Alpaca';
+        const ok = await confirmSheet('Prepnúť na LIVE', `Agent bude po zapnutí obchodovať so skutočnými peniazmi na tvojom ${where} účte. Napíš LIVE.`, { danger: true, typed: 'LIVE', ok: 'Prepnúť na live' });
         if (!ok) return;
         confirm = 'LIVE';
       }
       try {
         const r = await api('/broker', { method: 'POST', body: { values, password: bPw.value, confirm } });
-        toast(`Režim ${r.mode}, účet: ${fmtUsd(r.account.equity)}. Agent je vypnutý – zapni ho v hlavičke.`);
+        const cur = r.account.account_currency && r.account.account_currency !== 'USD' ? ` (účet v ${r.account.account_currency}, prepočet kurzom ECB)` : '';
+        toast(`Režim ${r.mode}, účet: ${fmtUsd(r.account.equity)}${cur}. Agent je vypnutý – zapni ho v hlavičke.`);
         await loadMe(); route();
       } catch (e) { toast(e.message, true); await loadMe(); route(); }
     }
+    const runningLabel = s.broker === 'FakeBroker' ? 'FakeBroker (syntetické dáta – chýbajú kľúče)' : s.broker === 'Trading212Broker' ? 'Trading 212 + dáta z Alpaca' : 'Alpaca';
+    const alpacaBox = el('div', { class: 'fields' },
+      el('label', { class: 'f' }, 'Alpaca paper Key ID', bIn.alpaca_paper_key_id, el('small', {}, 'Alpaca → Paper Trading → API Keys. Pri Trading 212 slúžia na ceny, sviečky a správy (zadarmo).')),
+      el('label', { class: 'f' }, 'Alpaca paper Secret', bIn.alpaca_paper_secret),
+      el('label', { class: 'f alpaca-only' }, 'Alpaca live Key ID', bIn.alpaca_live_key_id, el('small', {}, 'Iné kľúče než paper! Alpaca → Live Trading → API Keys.')),
+      el('label', { class: 'f alpaca-only' }, 'Alpaca live Secret', bIn.alpaca_live_secret));
+    const t212Box = el('div', { class: 'fields t212-only' },
+      el('label', { class: 'f' }, 'Trading 212 demo API kľúč', bIn.t212_demo_key_id, el('small', {}, 'Trading 212 → prepni na Practice → Settings → API (Beta) → Generate. Povoľ account, portfolio, orders, metadata.')),
+      el('label', { class: 'f' }, 'Trading 212 demo API secret', bIn.t212_demo_secret),
+      el('label', { class: 'f' }, 'Trading 212 live API kľúč', bIn.t212_live_key_id, el('small', {}, 'To isté na reálnom Invest účte. Kľúče demo a live sú rôzne.')),
+      el('label', { class: 'f' }, 'Trading 212 live API secret', bIn.t212_live_secret));
+    function syncBrokerFields() {
+      const t = brokerSel.value === 'trading212';
+      t212Box.hidden = !t;
+      alpacaBox.querySelectorAll('.alpaca-only').forEach(n => { n.hidden = t; });
+    }
+    brokerSel.addEventListener('change', syncBrokerFields); syncBrokerFields();
     const brokerCard = el('div', { class: 'card' }, el('h2', {}, 'Broker a kľúče', el('strong', { class: 'mode mode-' + s.mode }, s.mode)),
-      el('p', { class: 'note' }, `Beží: ${s.broker === 'FakeBroker' ? 'FakeBroker (syntetické dáta – chýbajú Alpaca kľúče)' : 'Alpaca'} · paper kľúče: ${s.alpaca_paper_set ? 'nastavené' : 'chýbajú'} · live kľúče: ${s.alpaca_live_set ? 'nastavené' : 'chýbajú'} · Claude kľúč: ${s.analyst_key_set ? 'nastavený' : 'chýba'}`),
+      el('p', { class: 'note' }, `Beží: ${runningLabel} · Alpaca paper: ${s.alpaca_paper_set ? 'áno' : 'chýba'} · Alpaca live: ${s.alpaca_live_set ? 'áno' : 'chýba'} · T212 demo: ${s.t212_demo_set ? 'áno' : 'chýba'} · T212 live: ${s.t212_live_set ? 'áno' : 'chýba'} · Claude: ${s.analyst_key_set ? 'áno' : 'chýba'}`),
       el('div', { class: 'fields' },
-        el('label', { class: 'f' }, 'Režim obchodovania', modeSel, el('small', {}, 'dry nič neposiela; paper a live posielajú objednávky na príslušný Alpaca účet.')),
-        el('label', { class: 'f' }, 'Anthropic API kľúč', bIn.anthropic_api_key, el('small', {}, 'Claude analytik správ. Prázdne = len technické signály.')),
-        el('label', { class: 'f' }, 'Alpaca paper Key ID', bIn.alpaca_paper_key_id, el('small', {}, 'Alpaca → Paper Trading → API Keys.')),
-        el('label', { class: 'f' }, 'Alpaca paper Secret', bIn.alpaca_paper_secret),
-        el('label', { class: 'f' }, 'Alpaca live Key ID', bIn.alpaca_live_key_id, el('small', {}, 'Iné kľúče než paper! Alpaca → Live Trading → API Keys.')),
-        el('label', { class: 'f' }, 'Alpaca live Secret', bIn.alpaca_live_secret),
-        el('label', { class: 'f' }, 'Potvrď heslom', bPw, el('small', {}, 'Zmena režimu alebo kľúčov vyžaduje heslo. Po zmene sa agent vypne, zapneš ho vedome znova.'))),
+        el('label', { class: 'f' }, 'Broker', brokerSel, el('small', {}, 'Trading 212: vklad kartou, Apple Pay alebo SEPA, výber zadarmo, bez pravidla PDT. Ceny a správy sú vždy z Alpaca.')),
+        el('label', { class: 'f' }, 'Režim obchodovania', modeSel, el('small', {}, 'dry nič neposiela; paper = Alpaca paper alebo Trading 212 demo; live = skutočný účet.')),
+        el('label', { class: 'f' }, 'Anthropic API kľúč', bIn.anthropic_api_key, el('small', {}, 'Claude analytik správ. Prázdne = len technické signály.'))),
+      alpacaBox, t212Box,
+      el('div', { class: 'fields' },
+        el('label', { class: 'f' }, 'Potvrď heslom', bPw, el('small', {}, 'Zmena brokera, režimu alebo kľúčov vyžaduje heslo. Po zmene sa agent vypne, zapneš ho vedome znova.'))),
       el('div', { class: 'row', style: { 'justify-content': 'flex-end' } }, el('button', { class: 'btn ' + (modeSel.value === 'live' ? 'danger' : 'primary'), onclick: saveBroker }, 'Uložiť broker a kľúče')));
     modeSel.addEventListener('change', () => { brokerCard.querySelector('.row .btn').className = 'btn ' + (modeSel.value === 'live' ? 'danger' : 'primary'); });
 

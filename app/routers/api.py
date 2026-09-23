@@ -43,6 +43,7 @@ def me(request: Request):
         "agent_enabled": settings.get("agent_enabled"),
         "analyst": bool(scheduler.engine and scheduler.engine.analyst),
         "broker": scheduler.broker.__class__.__name__ if scheduler.broker else None,
+        "broker_name": settings.broker_name(),
         "last_cycle_at": scheduler.last_cycle_at.isoformat() if scheduler.last_cycle_at else None,
         "last_error": scheduler.last_error,
         "day": day, "clock": _clock(),
@@ -57,6 +58,7 @@ def overview(request: Request):
     try:
         a = scheduler.broker.account()
         acct = {"equity": a.equity, "cash": a.cash, "last_equity": a.last_equity, "buying_power": a.buying_power,
+                "account_currency": a.account_currency, "fx_to_usd": a.fx_to_usd,
                 "daytrade_count": a.daytrade_count,
                 "pattern_day_trader": a.pattern_day_trader, "trading_blocked": a.trading_blocked}
         positions = [p.__dict__ for p in scheduler.broker.positions()]
@@ -118,7 +120,9 @@ def get_settings(request: Request):
     return {"settings": settings.public_view(), "mode": scheduler.mode, "wanted_mode": settings.mode(),
             "broker": scheduler.broker.__class__.__name__ if scheduler.broker else None,
             "analyst_key_set": bool(settings.get("anthropic_api_key")),
-            "alpaca_paper_set": bool(paper_id and paper_sec), "alpaca_live_set": bool(live_id and live_sec)}
+            "alpaca_paper_set": bool(paper_id and paper_sec), "alpaca_live_set": bool(live_id and live_sec),
+            "broker_name": settings.broker_name(),
+            "t212_demo_set": all(settings.t212_creds("paper")), "t212_live_set": all(settings.t212_creds("live"))}
 
 
 @router.put("/settings")
@@ -159,24 +163,25 @@ async def put_broker(request: Request):
         settings.set_many(values, clear, u["username"], allow_broker=True)
     except ValueError as e:
         raise ApiError(str(e))
-    # kontrola kľúčov pre zvolený režim (po uložení, aby sa dali zadať spolu s režimom)
-    kid, sec = settings.alpaca_creds(new_mode)
-    if new_mode in ("paper", "live") and not (kid and sec):
+    # kontrola kľúčov pre zvolený broker + režim (po uložení, aby sa dali zadať spolu s režimom)
+    missing = settings.missing_creds(settings.broker_name(), new_mode) if new_mode != "dry" else None
+    if missing:
         settings.set_many({"trading_mode": "dry"}, [], u["username"], allow_broker=True)
         scheduler.rebuild()
-        raise ApiError(f"Pre režim {new_mode} chýbajú Alpaca {new_mode} kľúče – ostávam v dry.")
+        raise ApiError(f"{missing} Ostávam v dry.")
     old_mode = scheduler.mode
     settings.set_many({"agent_enabled": "0"}, [], u["username"])
     scheduler.rebuild()
-    db.log_history(u["username"], "broker_changed", {"mode": scheduler.mode, "ip": auth.client_ip(request)})
+    db.log_history(u["username"], "broker_changed", {"mode": scheduler.mode, "broker": settings.broker_name(),
+                                                      "ip": auth.client_ip(request)})
     if scheduler.mode != old_mode or new_mode == "live":
         ntfy.notify("Roblowe: zmena režimu", f"{old_mode} → {scheduler.mode} (agent vypnutý, zapni ho ručne)", priority=4)
     # over spojenie s brokerom
     try:
         a = scheduler.broker.account()
-        acct = {"equity": a.equity, "cash": a.cash}
+        acct = {"equity": a.equity, "cash": a.cash, "account_currency": a.account_currency}
     except Exception as e:  # noqa: BLE001
-        raise ApiError(f"Uložené, ale broker odmietol kľúče ({e.__class__.__name__}). Skontroluj ich.", 502)
+        raise ApiError(f"Uložené, ale broker odmietol kľúče: {e}", 502)
     return {"ok": True, "mode": scheduler.mode, "account": acct, "settings": settings.public_view()}
 
 

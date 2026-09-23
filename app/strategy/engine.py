@@ -269,10 +269,10 @@ class Engine:
                 "SELECT symbol FROM orders WHERE kind='entry' AND status!='rejected' AND at >= ?", (d0,))}
             for p in list(positions):
                 if p.symbol not in today_entries:
-                    rep.orders.append(self.close(p, "zostatok z predošlého dňa bez stop-lossu"))
-                    rep.decisions.append(self._decide(p.symbol, "sell", "zostatok z predošlého dňa bez stop-lossu",
-                                                      price=p.current_price))
-                    self.notify("Roblowe: zatváram zostatok", f"{p.symbol} {p.qty:g} ks ostal otvorený z predošlého dňa.")
+                    why = "zostatok bez dnešného vstupu agenta (z predošlého dňa alebo ručný nákup)"
+                    rep.orders.append(self.close(p, why))
+                    rep.decisions.append(self._decide(p.symbol, "sell", why, price=p.current_price))
+                    self.notify("Roblowe: zatváram zostatok", f"{p.symbol} {p.qty:g} ks – {why}.")
                     held.pop(p.symbol, None)
             positions = [p for p in positions if p.symbol in held]
 
@@ -322,7 +322,16 @@ class Engine:
                 else:
                     open_syms.discard(r["symbol"])
         entries = 0
-        pdt_block = risk.pdt_blocks_entry(acct.equity, acct.daytrade_count, settings.get("respect_pdt"))
+        pdt_block = risk.pdt_blocks_entry(acct.equity, acct.daytrade_count,
+                                          settings.get("respect_pdt") and getattr(self.broker, "pdt_applies", True))
+        native_bracket = getattr(self.broker, "native_bracket", True)
+        entry_levels: dict[str, dict] = {}
+        if not native_bracket:
+            # stop a cieľ z dnešných vstupov agenta (broker bez bracketu – cieľ stráži engine)
+            d0 = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=config.MARKET_TZ).astimezone(timezone.utc).isoformat()
+            for r in db.q("SELECT symbol, stop_price, take_profit FROM orders WHERE kind='entry' AND status!='rejected' "
+                          "AND at >= ? ORDER BY id", (d0,)):
+                entry_levels[r["symbol"]] = {"stop": r["stop_price"], "tp": r["take_profit"]}
         entry_window = (mins_since_open >= settings.get("no_entry_first_min")
                         and mins_to_close > settings.get("no_entry_after_close_min"))
         cash_left = acct.cash
@@ -341,6 +350,25 @@ class Engine:
 
             # 4) výstupy
             if p:
+                lv = entry_levels.get(s)
+                if not native_bracket and self._live() and lv:
+                    if lv["tp"] and t.price >= lv["tp"]:
+                        rep.orders.append(self.close(p, f"cieľ {lv['tp']:.2f} dosiahnutý"))
+                        rep.decisions.append(self._decide(s, "sell", f"cieľ {lv['tp']:.2f} dosiahnutý", price=t.price,
+                                                          tech=t, news=valid_news, score=score, details=det))
+                        continue
+                    if lv["stop"] and s not in open_syms:
+                        # stop-loss u brokera chýba (zrušený, zlyhal) → zadaj znova, inak zavri
+                        try:
+                            self.broker.place_stop(s, p.qty, lv["stop"])
+                            rep.notes.append(f"{s}: chýbal stop-loss, znova zadaný na {lv['stop']:.2f}.")
+                            self.notify("Roblowe: stop-loss obnovený", f"{s} stop {lv['stop']:.2f}")
+                        except Exception as e:  # noqa: BLE001
+                            log.warning("place_stop %s zlyhalo: %s", s, e)
+                            rep.orders.append(self.close(p, f"stop-loss sa nedal zadať ({e})"))
+                            rep.decisions.append(self._decide(s, "sell", "stop-loss sa nedal zadať", price=t.price,
+                                                              tech=t, news=valid_news, score=score, details=det))
+                            continue
                 if score <= settings.get("sell_threshold"):
                     rep.orders.append(self.close(p, f"skóre {score:+.2f} pod hranicou predaja"))
                     rep.decisions.append(self._decide(s, "sell", "skóre pod hranicou predaja", price=t.price, tech=t,
@@ -350,7 +378,8 @@ class Engine:
                     rep.decisions.append(self._decide(s, "sell", "negatívna správa", price=t.price, tech=t,
                                                       news=valid_news, score=score, details=det))
                 else:
-                    rep.decisions.append(self._decide(s, "hold", "držím, stop/cieľ u brokera", price=t.price, tech=t,
+                    rep.decisions.append(self._decide(s, "hold", "držím, stop/cieľ u brokera" if native_bracket
+                                                      else "držím, stop u brokera, cieľ stráži agent", price=t.price, tech=t,
                                                       news=valid_news, score=score, details=det))
                 continue
 

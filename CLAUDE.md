@@ -14,8 +14,10 @@ tvrdé rizikové mantinely (`app/strategy/risk.py`) → bracket objednávky (sto
   Bez build stepu, ORM, Redis, pandas.
 - Jeden uvicorn proces: `app/scheduler.py` (thread, tick 30 s) spúšťa `Engine.cycle()`, dennú zálohu
   a upratovanie. Migrácie `app/db.py:MIGRATIONS` (PRAGMA user_version), forward-only.
-- Broker: `app/broker/alpaca.py` (REST cez httpx, trading + data + news), `fake.py` pre testy a
-  dry režim bez kľúčov. Rozhranie `base.py:Broker`.
+- Broker: `app/broker/alpaca.py` (REST cez httpx, trading + data + news), `trading212.py` (obchod na
+  Trading 212, dáta/správy/hodiny z Alpaca; market + GTC stop, cieľ stráži engine, rate limiter,
+  prepočet do USD cez `services/fx.py` = kurzy ECB), `fake.py` pre testy a dry bez kľúčov.
+  Rozhranie `base.py:Broker` s príznakmi `native_bracket` a `pdt_applies`. Výber: `settings.broker_name()`.
 - Stratégia: `signals.py` (EMA/RSI/ATR/VWAP → skóre), `analyst.py` (Claude, štruktúrovaný JSON),
   `risk.py` (sizing, denná strata, PDT), `engine.py` (poradie krokov je zámerné a nemenné).
 - `.env` je základ, `settings.OVERRIDABLE` sa dá prepísať v Nastaveniach (DB vyhráva); tajomstvá
@@ -52,3 +54,6 @@ Bez Alpaca kľúčov beží `FakeBroker` (syntetické dáta, burza „stále otv
 - Alpaca IEX feed je bezplatný, ale zobrazuje len IEX objem; na SIP treba platený plán.
 - Bez ALPACA kľúčov v dry režime sú dáta syntetické – nič z toho nehovorí o reálnom trhu.
 - Malé VPS (1.8 GiB): `mem_limit: 256m`; žiadne pandas/numpy.
+- Trading 212 API: bez cien/sviečok/správ, predaj = záporné quantity, objednávky nie sú idempotentné
+  (pri timeoute NEopakovať), obchoduje len v primárnej mene účtu, limity per endpoint (summary 1/5 s).
+  Zoznam nástrojov sa cachuje do `/data/t212_instruments.json` (24 h).

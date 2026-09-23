@@ -32,12 +32,33 @@ z mobilu na dashboarde.
 Claude nikdy neposiela objednávky – dodáva iba skóre. Všetko ostatné je deterministický kód,
 ktorý si vieš prečítať v `app/strategy/`.
 
+## Broker: Alpaca alebo Trading 212
+
+V Nastavenia → Broker a kľúče si vyberieš, kde agent obchoduje. Ceny, sviečky, správy a hodiny
+burzy sú v oboch prípadoch z Alpaca – Trading 212 API ich nemá. Stačia na to bezplatné Alpaca
+paper kľúče, vklad na Alpaca netreba.
+
+| | Alpaca (USA) | Trading 212 (EÚ, Cyprus) |
+|---|---|---|
+| Vklad / výber | medzinárodný prevod v USD | karta, Apple Pay, SEPA; výber zadarmo |
+| Pravidlo PDT (pod 25 000 USD max. 3 day-trady / 5 dní) | platí | neplatí |
+| Stop-loss a cieľ | bracket objednávka u brokera | stop-loss u brokera (platí do zrušenia), cieľ stráži agent každý cyklus |
+| Skúšobný účet | paper | demo (Practice) |
+
+**Trading 212 a mena účtu.** API obchoduje len v primárnej mene účtu. Pri účte v EUR sa pri každom
+nákupe aj predaji americkej akcie platí prevod 0,15 %. V appke Trading 212 nastav Currency options →
+nákup aj predaj na *Asset currency* a po prvých obchodoch na demo účte over v histórii, či sa
+poplatok za prevod účtuje. Sumy účtu v EUR appka prepočíta na USD denným kurzom ECB.
+
+Ak Trading 212 niektorý ticker z watchlistu nemá, agent ho preskočí a v Obchodoch uvidíš dôvod.
+Agent zavrie každú pozíciu, ktorú v ten deň sám neotvoril – účet nechaj len agentovi.
+
 ## Režimy
 
 | Režim | Čo robí | Kedy |
 |---|---|---|
 | `dry` | Rozhoduje, loguje, na burzu neposiela nič. S Alpaca kľúčmi používa reálne dáta. | prvé dni – sleduj, či dôvody dávajú zmysel |
-| `paper` | Obchoduje na Alpaca paper účte (fiktívnych 100 000 USD). | 4–8 týždňov minimum |
+| `paper` | Obchoduje na Alpaca paper alebo Trading 212 demo účte (fiktívne peniaze). | 4–8 týždňov minimum |
 | `live` | Skutočné peniaze. Prepnutie vyžaduje heslo a napísať LIVE; zapnutie agenta v live režime ďalšie LIVE. | až keď paper výsledky presvedčia |
 
 Režim a API kľúče (Alpaca paper, Alpaca live, Anthropic) sa nastavujú v appke: **Nastavenia →
