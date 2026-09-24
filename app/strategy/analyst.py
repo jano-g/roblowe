@@ -176,7 +176,9 @@ class ClaudeAnalyst:
         params = {
             "model": self.model,
             "max_tokens": 4000,
-            "system": [{"type": "text", "text": SYSTEM, "cache_control": {"type": "ephemeral"}}],
+            # 1 h TTL: analýzy chodia len pri nových správach, často > 5 min od seba – 5 min cache vždy
+            # vypršala a každé volanie platilo nový zápis bez jediného čítania (Console, 21.–23. 9.).
+            "system": [{"type": "text", "text": SYSTEM, "cache_control": {"type": "ephemeral", "ttl": "1h"}}],
             "messages": [{"role": "user", "content": prompt}],
             "output_config": output_config,
         }

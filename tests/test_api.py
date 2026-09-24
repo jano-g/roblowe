@@ -193,6 +193,7 @@ def test_models_endpoint_and_validation(logged, monkeypatch):
     a.model, a.info = "claude-opus-5", items[0]
     p = a.request_params("x")
     assert p["output_config"]["effort"] == "high" and p["fallbacks"] == "default"
+    assert p["system"][0]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
     assert logged.put("/api/settings", json={"values": {"analyst_model": "evil model;"}}).status_code == 400
     assert logged.put("/api/settings", json={"values": {"analyst_model": "claude-sonnet-5", "analyst_effort": "xhigh"}}).status_code == 200
     analyst._models_cache.update(at=0.0, key=None, items=None)
