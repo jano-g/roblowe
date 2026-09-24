@@ -82,9 +82,6 @@ class Broker(Protocol):
 ACCOUNT_LABELS = {
     "alpaca:paper": "Alpaca paper",
     "alpaca:live": "Alpaca live",
-    # história z obdobia, keď appka podporovala aj Trading 212 (dáta ostali v DB)
-    "trading212:demo": "Trading 212 demo (história)",
-    "trading212:live": "Trading 212 live (história)",
     "fake": "Syntetické dáta",
 }
 

@@ -131,6 +131,13 @@ MIGRATIONS: list[str] = [
     DELETE FROM settings WHERE key IN ('broker_name', 't212_demo_key_id', 't212_demo_secret',
                                        't212_live_key_id', 't212_live_secret', 'respect_pdt');
     """,
+    # 6 – história Trading 212 zmazaná na žiadosť (dni, krivka, objednávky, rozhodnutia)
+    """
+    DELETE FROM days WHERE account LIKE 'trading212:%';
+    DELETE FROM equity WHERE account LIKE 'trading212:%';
+    DELETE FROM orders WHERE account LIKE 'trading212:%';
+    DELETE FROM decisions WHERE account LIKE 'trading212:%';
+    """,
 ]
 
 

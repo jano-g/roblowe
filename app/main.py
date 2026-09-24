@@ -28,6 +28,7 @@ async def lifespan(app: FastAPI):
             log.error(e)
         sys.exit(1)
     db.migrate()
+    (config.DATA_DIR / "t212_instruments.json").unlink(missing_ok=True)  # pozostatok po Trading 212
     auth.bootstrap_admin()
     scheduler.start()
     log.info("%s started (režim %s, admin %s)", config.APP_NAME, scheduler.mode, config.ADMIN_USERNAME)

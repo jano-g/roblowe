@@ -15,8 +15,8 @@ tvrdé rizikové mantinely (`app/strategy/risk.py`) → bracket objednávky (sto
 - Jeden uvicorn proces: `app/scheduler.py` (thread, tick 30 s) spúšťa `Engine.cycle()`, dennú zálohu
   a upratovanie. Migrácie `app/db.py:MIGRATIONS` (PRAGMA user_version), forward-only.
 - Broker: `app/broker/alpaca.py` (REST cez httpx, trading + data + news), `fake.py` pre testy a dry bez
-  kľúčov. Rozhranie `base.py:Broker` s `account_key`. Iný broker nie je (Trading 212 bol odstránený pre
-  poplatky za prevod meny pri každom obchode; jeho história v DB ostáva ako `trading212:*`).
+  kľúčov. Rozhranie `base.py:Broker` s `account_key`. Iný broker nie je (Trading 212 bol odstránený aj s
+  históriou pre poplatky za prevod meny pri každom obchode).
 - Štatistiky sú per účet (`account_key`: alpaca:paper|alpaca:live|fake):
   `days` (PK account+date), `equity`, `orders`, `decisions` majú stĺpec `account`; engine píše/číta
   len `self.account`, API berie `?account=` (default aktuálny). Správy od Claude sú spoločné.
