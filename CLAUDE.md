@@ -21,7 +21,9 @@ tvrdé rizikové mantinely (`app/strategy/risk.py`) → bracket objednávky (sto
   `days` (PK account+date), `equity`, `orders`, `decisions` majú stĺpec `account`; engine píše/číta
   len `self.account`, API berie `?account=` (default aktuálny). Správy od Claude sú spoločné.
 - `scheduler.engines` je zoznam (dnes vždy jeden Engine), API hľadá engine cez `engine_for(account)`.
-- Stratégia: `signals.py` (EMA/RSI/ATR/VWAP → skóre), `analyst.py` (Claude, štruktúrovaný JSON),
+- Stratégia: `signals.py` (EMA/RSI/ATR/VWAP → skóre), `analyst.py` (Claude, štruktúrovaný JSON; výber
+  modelu z Models API cez `list_models()` – len modely so structured outputs, cache 6 h, effort a
+  server-side fallback sa posielajú len keď ich model podporuje),
   `risk.py` (sizing, denná strata), `engine.py` (poradie krokov je zámerné a nemenné).
 - `.env` je základ, `settings.OVERRIDABLE` sa dá prepísať v Nastaveniach (DB vyhráva); tajomstvá
   (`SECRET_KEYS`) sa nikdy nevracajú do prehliadača. `settings.BROKER_KEYS` (režim, Alpaca paper/live

@@ -92,6 +92,67 @@ def build_prompt(news: list[NewsItem], tech_context: dict[str, str], watchlist: 
     return "\n".join(lines)
 
 
+# -- katalóg modelov (Anthropic Models API) ------------------------------------------------------
+EFFORTS = ("low", "medium", "high", "xhigh", "max")
+MODELS_TTL = 6 * 3600
+# záloha, keď Models API nie je dostupné (bez kľúča / výpadok); poradie = odporúčané
+FALLBACK_MODELS = [
+    {"id": "claude-opus-5", "name": "Claude Opus 5", "efforts": list(EFFORTS)},
+    {"id": "claude-fable-5-1", "name": "Claude Fable 5.1", "efforts": list(EFFORTS)},
+    {"id": "claude-sonnet-5", "name": "Claude Sonnet 5", "efforts": list(EFFORTS)},
+    {"id": "claude-haiku-4-5", "name": "Claude Haiku 4.5", "efforts": []},
+]
+_models_cache: dict = {"at": 0.0, "key": None, "items": None}
+
+
+def _cap(caps, *path) -> bool:
+    cur = caps
+    for k in path:
+        if not isinstance(cur, dict) or k not in cur:
+            return False
+        cur = cur[k]
+    return bool(cur.get("supported")) if isinstance(cur, dict) else bool(cur)
+
+
+def list_models(api_key: str, force: bool = False) -> tuple[list[dict], str | None]:
+    """Aktuálne modely z Models API, ktoré vedia štruktúrovaný výstup (analytik ho potrebuje).
+    Vráti (zoznam, chyba). Cache 6 h; pri chybe posledný známy zoznam alebo záloha."""
+    import time as _time
+
+    c = _models_cache
+    if not force and c["items"] and c["key"] == api_key and _time.time() - c["at"] < MODELS_TTL:
+        return c["items"], None
+    if not api_key:
+        return FALLBACK_MODELS, "Chýba Anthropic API kľúč – zobrazujem predvolený zoznam."
+    try:
+        import anthropic
+
+        client = anthropic.Anthropic(api_key=api_key, timeout=15.0, max_retries=1)
+        items = []
+        for m in client.models.list():  # auto-paginácia
+            caps = getattr(m, "capabilities", None) or {}
+            if caps and not _cap(caps, "structured_outputs"):
+                continue
+            efforts = [e for e in EFFORTS if _cap(caps, "effort", e)] if _cap(caps, "effort") else []
+            created = getattr(m, "created_at", None)
+            items.append({"id": m.id, "name": getattr(m, "display_name", None) or m.id, "efforts": efforts,
+                          "created": created.isoformat() if hasattr(created, "isoformat") else str(created or "")})
+        items.sort(key=lambda x: x["created"], reverse=True)
+        if not items:
+            raise ValueError("prázdny zoznam")
+        c.update(at=_time.time(), key=api_key, items=items)
+        return items, None
+    except Exception as e:  # noqa: BLE001 – katalóg je pomocný, nikdy nesmie zhodiť appku
+        log.warning("Models API nedostupné: %s", e.__class__.__name__)
+        return (c["items"] if c["items"] and c["key"] == api_key else FALLBACK_MODELS), \
+            "Zoznam modelov sa nepodarilo načítať z Anthropic – zobrazujem posledný známy."
+
+
+def model_info(api_key: str, model_id: str) -> dict | None:
+    items, _ = list_models(api_key)
+    return next((m for m in items if m["id"] == model_id), None)
+
+
 class ClaudeAnalyst:
     def __init__(self, api_key: str | None = None, model: str = "claude-opus-5", effort: str = "medium"):
         import anthropic  # lokálny import: analytik je voliteľný
@@ -100,21 +161,36 @@ class ClaudeAnalyst:
         self.client = anthropic.Anthropic(api_key=api_key or None, timeout=90.0, max_retries=2)
         self.model = model
         self.effort = effort
+        self.info = model_info(api_key or "", model) if api_key else None
+
+    def request_params(self, prompt: str) -> dict:
+        """Parametre požiadavky prispôsobené modelu: effort len keď ho model podporuje (inak najbližší
+        nižší), server-side fallback len pre Opus 5 / Fable 5.x, kde ho API ponúka."""
+        info = self.info or {}
+        efforts = info.get("efforts", list(EFFORTS) if not info else [])
+        output_config: dict = {"format": {"type": "json_schema", "schema": SCHEMA}}
+        if efforts:
+            want = self.effort if self.effort in EFFORTS else "medium"
+            ok = [e for e in EFFORTS[: EFFORTS.index(want) + 1] if e in efforts]
+            output_config["effort"] = ok[-1] if ok else efforts[0]
+        params = {
+            "model": self.model,
+            "max_tokens": 4000,
+            "system": [{"type": "text", "text": SYSTEM, "cache_control": {"type": "ephemeral"}}],
+            "messages": [{"role": "user", "content": prompt}],
+            "output_config": output_config,
+        }
+        if self.model.startswith(("claude-opus-5", "claude-fable-5")):
+            params["betas"] = ["server-side-fallback-2026-07-01"]
+            params["fallbacks"] = "default"
+        return params
 
     def analyze(self, news: list[NewsItem], tech_context: dict[str, str], watchlist: list[str]) -> Analysis | None:
         if not news:
             return None
         prompt = build_prompt(news, tech_context, watchlist)
         try:
-            resp = self.client.beta.messages.create(
-                model=self.model,
-                max_tokens=4000,
-                system=[{"type": "text", "text": SYSTEM, "cache_control": {"type": "ephemeral"}}],
-                messages=[{"role": "user", "content": prompt}],
-                output_config={"effort": self.effort, "format": {"type": "json_schema", "schema": SCHEMA}},
-                betas=["server-side-fallback-2026-07-01"],
-                fallbacks="default",
-            )
+            resp = self.client.beta.messages.create(**self.request_params(prompt))
         except self._anthropic.RateLimitError:
             log.warning("Claude: rate limit, analýza preskočená")
             return None

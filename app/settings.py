@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import os
 from typing import Any
 
@@ -41,7 +42,7 @@ OVERRIDABLE: dict[str, tuple[str, Any, str, str]] = {
     # Claude
     "analyst_enabled": ("ANALYST_ENABLED", "1", "bool", "Používať Claude na analýzu správ."),
     "analyst_model": ("ANALYST_MODEL", "claude-opus-5", "str", "Model pre analýzu správ."),
-    "analyst_effort": ("ANALYST_EFFORT", "medium", "str", "Hĺbka uvažovania (low/medium/high)."),
+    "analyst_effort": ("ANALYST_EFFORT", "medium", "str", "Hĺbka uvažovania (low … max). Ak model úroveň nepodporuje, použije sa najbližšia nižšia."),
     "analyst_max_headlines": ("ANALYST_MAX_HEADLINES", "40", "int", "Max. správ na jednu analýzu."),
     "analyst_daily_budget_calls": ("ANALYST_DAILY_BUDGET_CALLS", "60", "int", "Max. volaní Claude za deň (kontrola nákladov)."),
     # Notifikácie
@@ -161,8 +162,10 @@ def validate(key: str, value: Any) -> str:
         return s.lower()
     if key == "notify_mode" and s not in ("trade", "daily", "both"):
         raise ValueError("Notifikácie: trade, daily alebo both.")
-    if key == "analyst_effort" and s not in ("low", "medium", "high"):
-        raise ValueError("Hĺbka uvažovania: low, medium alebo high.")
+    if key == "analyst_effort" and s not in ("low", "medium", "high", "xhigh", "max"):
+        raise ValueError("Hĺbka uvažovania: low, medium, high, xhigh alebo max.")
+    if key == "analyst_model" and not re.fullmatch(r"[a-z0-9][a-z0-9.\-]{2,79}", s):
+        raise ValueError("Neplatné ID modelu.")
     if key == "bar_timeframe" and s not in ("1Min", "5Min", "15Min", "30Min", "1Hour"):
         raise ValueError("Timeframe: 1Min, 5Min, 15Min, 30Min alebo 1Hour.")
     return s

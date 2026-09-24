@@ -157,3 +157,42 @@ def test_removed_settings_are_rejected_and_hidden(logged):
     assert r.status_code == 400
     ov = logged.get("/api/overview").json()
     assert "daytrade_count" not in ov["account"] and ov["trades_today"] == 0
+
+
+def test_models_endpoint_and_validation(logged, monkeypatch):
+    from app.strategy import analyst
+    analyst._models_cache.update(at=0.0, key=None, items=None)
+    r = logged.get("/api/models").json()  # bez kľúča → záloha
+    assert r["error"] and any(m["id"] == "claude-opus-5" for m in r["items"]) and r["current"] == "claude-opus-5"
+
+    class M:
+        def __init__(self, id, name, caps, created):
+            self.id, self.display_name, self.capabilities, self.created_at = id, name, caps, created
+
+    full = {"structured_outputs": {"supported": True}, "effort": {"supported": True, **{e: {"supported": True} for e in analyst.EFFORTS}}}
+    noeff = {"structured_outputs": {"supported": True}, "effort": {"supported": False}}
+    nojson = {"structured_outputs": {"supported": False}}
+
+    class FakeClient:
+        def __init__(self, **k):
+            self.models = self
+
+        def list(self):
+            return [M("claude-old", "Old", nojson, "2024"), M("claude-haiku-4-5", "Claude Haiku 4.5", noeff, "2025"),
+                    M("claude-opus-5", "Claude Opus 5", full, "2026")]
+    import anthropic
+    monkeypatch.setattr(anthropic, "Anthropic", FakeClient)
+    items, err = analyst.list_models("sk-test", force=True)
+    assert err is None and [m["id"] for m in items] == ["claude-opus-5", "claude-haiku-4-5"]
+    assert items[1]["efforts"] == []
+    # effort sa posiela len keď ho model podporuje; fallbacks len pre Opus 5 / Fable 5.x
+    a = analyst.ClaudeAnalyst.__new__(analyst.ClaudeAnalyst)
+    a.model, a.effort, a.info = "claude-haiku-4-5", "high", items[1]
+    p = a.request_params("x")
+    assert "effort" not in p["output_config"] and "fallbacks" not in p
+    a.model, a.info = "claude-opus-5", items[0]
+    p = a.request_params("x")
+    assert p["output_config"]["effort"] == "high" and p["fallbacks"] == "default"
+    assert logged.put("/api/settings", json={"values": {"analyst_model": "evil model;"}}).status_code == 400
+    assert logged.put("/api/settings", json={"values": {"analyst_model": "claude-sonnet-5", "analyst_effort": "xhigh"}}).status_code == 200
+    analyst._models_cache.update(at=0.0, key=None, items=None)

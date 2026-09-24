@@ -291,6 +291,25 @@
     ['Notifikácie', ['ntfy_server', 'ntfy_topic', 'notify_mode']],
     ['Zálohy', ['backup_enabled', 'backup_time', 'backup_keep', 'b2_key_id', 'b2_app_key', 'b2_bucket', 'b2_prefix']],
   ];
+  async function loadModels(select, current, refresh = false) {
+    const note = () => select.parentElement && select.parentElement.querySelector('small');
+    try {
+      const r = await api('/models' + (refresh ? '?refresh=1' : ''));
+      const items = r.items.slice();
+      if (!items.some(x => x.id === current)) items.unshift({ id: current, name: current + ' (nie je v zozname)', efforts: [] });
+      const keep = select.value || current;
+      mount(select, items.map(x => el('option', { value: x.id, selected: x.id === keep, dataset: { efforts: (x.efforts || []).join(',') } },
+        x.name)));
+      const show = () => {
+        const opt = select.selectedOptions[0]; const ef = opt && opt.dataset.efforts;
+        const n = note(); if (!n) return;
+        mount(n, (r.error ? r.error + ' ' : `Aktuálny zoznam z Anthropic (${r.items.length} modelov). `) + (ef ? 'Hĺbky uvažovania: ' + ef.replaceAll(',', ', ') + '.' : 'Model nepodporuje nastavenie hĺbky uvažovania.'),
+          ' ', el('a', { href: '#', onclick: (e) => { e.preventDefault(); loadModels(select, select.value, true); } }, 'Obnoviť zoznam'));
+      };
+      select.onchange = show; show();
+    } catch (e) { const n = note(); if (n) mount(n, 'Zoznam modelov sa nepodarilo načítať: ' + e.message); }
+  }
+
   async function viewSettings(root) {
     mount(root, el('div', { class: 'skeleton' }));
     const [s, b] = await Promise.all([api('/settings'), api('/backups')]);
@@ -301,7 +320,8 @@
       if (m.kind === 'bool') input = el('input', { type: 'checkbox', id, checked: m.value === true });
       else if (m.kind === 'secret') input = el('input', { type: 'password', id, placeholder: m.set ? '•••••• (uložené, prázdne = nemeniť)' : 'nenastavené', autocomplete: 'new-password' });
       else if (key === 'notify_mode') input = el('select', { id }, ...[['trade', 'každý obchod'], ['daily', 'jeden súhrn po zatvorení burzy'], ['both', 'každý obchod aj denný súhrn']].map(([v, t]) => el('option', { value: v, selected: m.value === v }, t)));
-      else if (key === 'analyst_effort') input = el('select', { id }, ...['low', 'medium', 'high'].map(v => el('option', { value: v, selected: m.value === v }, v)));
+      else if (key === 'analyst_effort') input = el('select', { id }, ...['low', 'medium', 'high', 'xhigh', 'max'].map(v => el('option', { value: v, selected: m.value === v }, v)));
+      else if (key === 'analyst_model') { input = el('select', { id }, el('option', { value: m.value, selected: true }, m.value)); loadModels(input, m.value); }
       else if (key === 'bar_timeframe') input = el('select', { id }, ...['1Min', '5Min', '15Min', '30Min', '1Hour'].map(v => el('option', { value: v, selected: m.value === v }, v)));
       else input = el('input', { id, value: String(m.value), inputmode: m.kind === 'float' || m.kind === 'int' ? 'decimal' : 'text' });
       inputs[key] = input;

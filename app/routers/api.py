@@ -258,6 +258,16 @@ async def put_broker(request: Request):
             "settings": settings.public_view()}
 
 
+@router.get("/models")
+def models(request: Request, refresh: int = 0):
+    """Aktuálny zoznam modelov z Anthropic Models API (pre výber modelu analytika)."""
+    _user(request)
+    from ..strategy.analyst import list_models
+
+    items, err = list_models(settings.get("anthropic_api_key"), force=bool(refresh))
+    return {"items": items, "error": err, "current": settings.get("analyst_model")}
+
+
 @router.post("/agent/toggle")
 async def agent_toggle(request: Request):
     u = _user(request)
