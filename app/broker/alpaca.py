@@ -134,6 +134,48 @@ class AlpacaBroker:
         return OrderResult(broker_id=o["id"], status=o.get("status", "accepted"),
                            filled_avg_price=float(o["filled_avg_price"]) if o.get("filled_avg_price") else None)
 
+    def order(self, order_id: str) -> dict:
+        return self._call(self._t, "GET", f"/v2/orders/{order_id}") or {}
+
+    def place_stop(self, symbol: str, qty: float, stop_price: float) -> OrderResult:
+        """Samostatný stop-loss (predaj). Zlomkové kusy Alpaca dovolí len s time_in_force=day."""
+        body = {"symbol": symbol, "qty": f"{qty:.9f}".rstrip("0").rstrip("."), "side": "sell", "type": "stop",
+                "time_in_force": "day", "stop_price": str(_round_price(stop_price))}
+        o = self._call(self._t, "POST", "/v2/orders", json=body)
+        return OrderResult(broker_id=o["id"], status=o.get("status", "accepted"))
+
+    def submit_fractional_buy(self, symbol: str, qty: float, stop_price: float) -> OrderResult:
+        """Zlomková market kúpa + hneď stop-loss. Bracket pre zlomky Alpaca nepodporuje, cieľ stráži engine.
+        Ak sa stop nepodarí zadať, pozíciu hneď zavrie – nikdy nenechá pozíciu bez ochrany."""
+        body = {"symbol": symbol, "qty": f"{qty:.9f}".rstrip("0").rstrip("."), "side": "buy", "type": "market",
+                "time_in_force": "day"}
+        o = self._call(self._t, "POST", "/v2/orders", json=body)
+        oid = o["id"]
+        filled_qty, avg = 0.0, None
+        for _ in range(10):  # market počas seansy sa vyplní za sekundy
+            cur = self.order(oid)
+            filled_qty = float(cur.get("filled_qty") or 0)
+            avg = float(cur["filled_avg_price"]) if cur.get("filled_avg_price") else None
+            if cur.get("status") in ("filled", "canceled", "rejected", "expired") or filled_qty >= qty - 1e-9:
+                break
+            time.sleep(1)
+        if filled_qty <= 0:
+            try:
+                self._call(self._t, "DELETE", f"/v2/orders/{oid}")
+            except BrokerError:
+                pass
+            raise BrokerError(f"{symbol}: kúpa sa nevyplnila do 10 s, objednávka zrušená.")
+        try:
+            self.place_stop(symbol, filled_qty, stop_price)
+        except BrokerError as e:
+            log.error("stop pre %s zlyhal (%s) – zatváram pozíciu", symbol, e)
+            try:
+                self._call(self._t, "DELETE", f"/v2/positions/{symbol}")
+            except BrokerError as e2:
+                raise BrokerError(f"{symbol}: stop-loss sa nepodarilo zadať a ani zavrieť pozíciu ({e2}). ZAVRI RUČNE.") from e2
+            raise BrokerError(f"{symbol}: stop-loss sa nepodarilo zadať ({e}), pozícia hneď zatvorená.") from e
+        return OrderResult(broker_id=oid, status="filled", filled_avg_price=avg)
+
     def close_position(self, symbol: str) -> OrderResult:
         # Najprv zruš bracket „nohy“ (TP/SL), inak Alpaca odmietne uzavretie pre held qty
         # („insufficient qty available“). Rušenie je asynchrónne – chvíľu počkaj, kým zmiznú.

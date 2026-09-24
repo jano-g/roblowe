@@ -274,7 +274,7 @@
     watchlist: 'Sledované tickery', cycle_minutes: 'Interval vyhodnotenia (min)', bar_timeframe: 'Sviečky',
     risk_per_trade_pct: 'Riziko na obchod (% equity)', max_position_pct: 'Max. pozícia (% equity)', max_positions: 'Max. počet pozícií',
     daily_loss_limit_pct: 'Denný limit straty (%)', atr_stop_mult: 'Stop-loss (× ATR)', reward_risk: 'Pomer cieľ : riziko',
-    flatten_before_close_min: 'Zavrieť všetko pred koncom (min)', no_entry_first_min: 'Bez vstupov po otvorení (min)',
+    fractional_shares: 'Zlomkové akcie', flatten_before_close_min: 'Zavrieť všetko pred koncom (min)', no_entry_first_min: 'Bez vstupov po otvorení (min)',
     no_entry_after_close_min: 'Bez vstupov pred koncom (min)',
     buy_threshold: 'Hranica kúpy', sell_threshold: 'Hranica predaja', tech_weight: 'Váha techniky', news_weight: 'Váha správ',
     news_min_confidence: 'Min. istota správy', require_news_for_entry: 'Vstup len s katalyzátorom',
@@ -285,7 +285,7 @@
   };
   const GROUPS = [
     ['Agent', ['watchlist', 'cycle_minutes', 'bar_timeframe']],
-    ['Riziko', ['risk_per_trade_pct', 'max_position_pct', 'max_positions', 'daily_loss_limit_pct', 'atr_stop_mult', 'reward_risk', 'flatten_before_close_min', 'no_entry_first_min', 'no_entry_after_close_min']],
+    ['Riziko', ['risk_per_trade_pct', 'max_position_pct', 'max_positions', 'fractional_shares', 'daily_loss_limit_pct', 'atr_stop_mult', 'reward_risk', 'flatten_before_close_min', 'no_entry_first_min', 'no_entry_after_close_min']],
     ['Signály', ['buy_threshold', 'sell_threshold', 'tech_weight', 'news_weight', 'news_min_confidence', 'require_news_for_entry']],
     ['Claude analytik', ['analyst_enabled', 'analyst_model', 'analyst_effort', 'analyst_max_headlines', 'analyst_daily_budget_calls']],
     ['Notifikácie', ['ntfy_server', 'ntfy_topic', 'notify_mode']],

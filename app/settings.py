@@ -29,6 +29,7 @@ OVERRIDABLE: dict[str, tuple[str, Any, str, str]] = {
     "daily_loss_limit_pct": ("DAILY_LOSS_LIMIT_PCT", "2", "float", "Denná strata, pri ktorej agent zastaví obchodovanie do zajtra (% equity)."),
     "atr_stop_mult": ("ATR_STOP_MULT", "1.5", "float", "Stop-loss = vstup − ATR × tento násobok."),
     "reward_risk": ("REWARD_RISK", "1.5", "float", "Take-profit = riziko × tento pomer."),
+    "fractional_shares": ("FRACTIONAL_SHARES", "0", "bool", "Zlomkové akcie: presná veľkosť pozície aj pri drahých tituloch. Stop-loss ostáva u brokera, cieľ stráži agent každý cyklus (bracket pre zlomky Alpaca nemá)."),
     "flatten_before_close_min": ("FLATTEN_BEFORE_CLOSE_MIN", "10", "int", "Koľko minút pred zatvorením burzy zavrieť všetko (žiadne pozície cez noc)."),
     "no_entry_after_close_min": ("NO_ENTRY_AFTER_CLOSE_MIN", "60", "int", "Neotváraj nové pozície, keď do zatvorenia zostáva menej minút."),
     "no_entry_first_min": ("NO_ENTRY_FIRST_MIN", "15", "int", "Neotváraj pozície prvých N minút po otvorení (najväčší chaos)."),

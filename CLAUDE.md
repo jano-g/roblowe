@@ -53,7 +53,10 @@ Bez Alpaca kľúčov beží `FakeBroker` (syntetické dáta, burza „stále otv
 
 ## Gotchas
 - `sqlite3.executescript` sám commitne transakciu → BEGIN/COMMIT patrí do skriptu (db.migrate).
-- Bracket objednávky vyžadujú celé akcie (žiadne fractional); `close_position` najprv ruší TP/SL nohy.
+- Bracket objednávky vyžadujú celé akcie. Zlomky (`fractional_shares`): `submit_fractional_buy` = market
+  (TIF day, qty na 0,001) + samostatný stop u brokera; `orders.protect='stop'` → engine stráži cieľ a
+  pri chýbajúcom stope ho znova zadá (inak zavrie). Ak stop po kúpe zlyhá, broker pozíciu hneď zavrie.
+  `close_position` najprv ruší TP/SL nohy.
 - Pravidlo PDT neexistuje od 4. 6. 2026 (FINRA); Alpaca odstránila polia `daytrade_count` a
   `pattern_day_trader` – nepoužívať, kúpnu silu hlási `buying_power`.
 - `mins_since_open` počíta 6,5 h seansu – v skrátené dni (13:00 ET) je okno „prvých N minút“ mäkšie.

@@ -128,11 +128,11 @@ class Engine:
         return d
 
     def _order(self, symbol: str, side: str, qty: float, kind: str, *, price=None, stop=None, tp=None,
-               broker_id=None, status="submitted", note=None) -> dict:
+               broker_id=None, status="submitted", note=None, protect="bracket") -> dict:
         o = {"at": self._ts(), "account": self.account, "mode": self.mode, "broker_id": broker_id, "symbol": symbol, "side": side, "qty": qty,
-             "kind": kind, "price": price, "stop_price": stop, "take_profit": tp, "status": status, "note": note}
-        db.run("INSERT INTO orders(at,account,mode,broker_id,symbol,side,qty,kind,price,stop_price,take_profit,status,note) "
-               "VALUES (:at,:account,:mode,:broker_id,:symbol,:side,:qty,:kind,:price,:stop_price,:take_profit,:status,:note)", o)
+             "kind": kind, "price": price, "stop_price": stop, "take_profit": tp, "status": status, "note": note, "protect": protect}
+        db.run("INSERT INTO orders(at,account,mode,broker_id,symbol,side,qty,kind,price,stop_price,take_profit,status,note,protect) "
+               "VALUES (:at,:account,:mode,:broker_id,:symbol,:side,:qty,:kind,:price,:stop_price,:take_profit,:status,:note,:protect)", o)
         return o
 
     def _live(self) -> bool:
@@ -171,19 +171,26 @@ class Engine:
         return o
 
     def enter(self, symbol: str, sizing: risk.Sizing, price: float, reason: str) -> dict:
+        """Celé kusy → bracket (stop aj cieľ u brokera). Zlomky → market + samostatný stop u brokera,
+        cieľ stráži engine v každom cykle (`protect='stop'`)."""
+        fractional = float(sizing.qty) != int(sizing.qty)
+        protect = "stop" if fractional else "bracket"
         broker_id, status = None, "dry"
         if self._live():
             try:
-                r = self.broker.submit_bracket_buy(symbol, sizing.qty, sizing.stop_price, sizing.take_profit)
+                if fractional:
+                    r = self.broker.submit_fractional_buy(symbol, sizing.qty, sizing.stop_price)
+                else:
+                    r = self.broker.submit_bracket_buy(symbol, int(sizing.qty), sizing.stop_price, sizing.take_profit)
                 broker_id, status = r.broker_id, r.status
             except Exception as e:  # noqa: BLE001
-                log.exception("submit_bracket_buy zlyhalo")
+                log.exception("vstup %s zlyhal", symbol)
                 status = "rejected"
                 reason = f"{reason} · CHYBA: {e}"
         o = self._order(symbol, "buy", sizing.qty, "entry", price=price, stop=sizing.stop_price, tp=sizing.take_profit,
-                        broker_id=broker_id, status=status, note=reason)
+                        broker_id=broker_id, status=status, note=reason, protect=protect)
         if settings.get("notify_mode") in ("trade", "both"):
-            self.notify(f"Roblowe: kúpa {symbol}", f"{sizing.qty} ks @ {price:.2f} · stop {sizing.stop_price:.2f} · cieľ {sizing.take_profit:.2f} · {reason}")
+            self.notify(f"Roblowe: kúpa {symbol}", f"{sizing.qty:g} ks @ {price:.2f} · stop {sizing.stop_price:.2f} · cieľ {sizing.take_profit:.2f} · {reason}")
         return o
 
     # -- správy ----------------------------------------------------------------------
@@ -355,6 +362,15 @@ class Engine:
                 else:
                     open_syms.discard(r["symbol"])
         entries = 0
+        fractional_on = settings.get("fractional_shares")
+        # zlomkové pozície: stop je u brokera, cieľ stráži engine → načítaj úrovne z dnešných vstupov
+        managed: dict[str, dict] = {}
+        d0_utc = datetime.strptime(date, "%Y-%m-%d").replace(tzinfo=config.MARKET_TZ).astimezone(timezone.utc).isoformat()
+        for r in db.q("SELECT symbol, stop_price, take_profit FROM orders WHERE account=? AND kind='entry' "
+                      "AND status!='rejected' AND protect='stop' AND at >= ? ORDER BY id", (self.account, d0_utc)):
+            managed[r["symbol"]] = {"stop": r["stop_price"], "tp": r["take_profit"]}
+        stop_syms = {o.get("symbol") for o in (self.broker.open_orders() if self._live() else [])
+                     if str(o.get("type", "")).lower() in ("stop", "stop_limit")} if managed else set()
         entry_window = (mins_since_open >= settings.get("no_entry_first_min")
                         and mins_to_close > settings.get("no_entry_after_close_min"))
         cash_left = acct.cash
@@ -373,6 +389,25 @@ class Engine:
 
             # 4) výstupy
             if p:
+                lv = managed.get(s)
+                if lv and self._live():
+                    if lv["tp"] and t.price >= lv["tp"]:
+                        rep.orders.append(self.close(p, f"cieľ {lv['tp']:.2f} dosiahnutý"))
+                        rep.decisions.append(self._decide(s, "sell", f"cieľ {lv['tp']:.2f} dosiahnutý", price=t.price,
+                                                          tech=t, news=valid_news, score=score, details=det))
+                        continue
+                    if lv["stop"] and s not in stop_syms:
+                        # stop-loss u brokera chýba (zrušený / expiroval) → zadaj znova, inak zavri
+                        try:
+                            self.broker.place_stop(s, p.qty, lv["stop"])
+                            rep.notes.append(f"{s}: chýbal stop-loss, znova zadaný na {lv['stop']:.2f}.")
+                            self.notify("Roblowe: stop-loss obnovený", f"{s} stop {lv['stop']:.2f}")
+                        except Exception as e:  # noqa: BLE001
+                            log.warning("place_stop %s zlyhalo: %s", s, e)
+                            rep.orders.append(self.close(p, f"stop-loss sa nedal zadať ({e})"))
+                            rep.decisions.append(self._decide(s, "sell", "stop-loss sa nedal zadať", price=t.price,
+                                                              tech=t, news=valid_news, score=score, details=det))
+                            continue
                 if score <= settings.get("sell_threshold"):
                     rep.orders.append(self.close(p, f"skóre {score:+.2f} pod hranicou predaja"))
                     rep.decisions.append(self._decide(s, "sell", "skóre pod hranicou predaja", price=t.price, tech=t,
@@ -382,7 +417,8 @@ class Engine:
                     rep.decisions.append(self._decide(s, "sell", "negatívna správa", price=t.price, tech=t,
                                                       news=valid_news, score=score, details=det))
                 else:
-                    rep.decisions.append(self._decide(s, "hold", "držím, stop/cieľ u brokera", price=t.price, tech=t,
+                    rep.decisions.append(self._decide(s, "hold", "držím, stop u brokera, cieľ stráži agent" if lv
+                                                      else "držím, stop/cieľ u brokera", price=t.price, tech=t,
                                                       news=valid_news, score=score, details=det))
                 continue
 
@@ -410,12 +446,15 @@ class Engine:
                 rep.decisions.append(self._decide(s, "skip", skip, price=t.price, tech=t, news=valid_news, score=score,
                                                   details=det))
                 continue
-            sizing = risk.position_size(acct.equity, cash_left, t.price, t.atr or 0,
-                                        risk_pct=settings.get("risk_per_trade_pct"),
-                                        max_pos_pct=settings.get("max_position_pct"),
-                                        atr_mult=settings.get("atr_stop_mult"),
-                                        reward_risk=settings.get("reward_risk"))
-            if sizing.qty < 1:
+            kw = dict(risk_pct=settings.get("risk_per_trade_pct"), max_pos_pct=settings.get("max_position_pct"),
+                      atr_mult=settings.get("atr_stop_mult"), reward_risk=settings.get("reward_risk"))
+            sizing = risk.position_size(acct.equity, cash_left, t.price, t.atr or 0, **kw)
+            if fractional_on:
+                frac = risk.position_size(acct.equity, cash_left, t.price, t.atr or 0, fractional=True, **kw)
+                # celé kusy len keď vyplnia aspoň 75 % cieľovej pozície (bracket je bezpečnejší), inak zlomky
+                if frac.qty > 0 and (sizing.qty < 1 or sizing.qty * t.price < 0.75 * frac.qty * t.price):
+                    sizing = frac
+            if sizing.qty <= 0:
                 rep.decisions.append(self._decide(s, "skip", sizing.reason, price=t.price, tech=t, news=valid_news,
                                                   score=score, details=det))
                 continue

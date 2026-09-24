@@ -138,6 +138,10 @@ MIGRATIONS: list[str] = [
     DELETE FROM orders WHERE account LIKE 'trading212:%';
     DELETE FROM decisions WHERE account LIKE 'trading212:%';
     """,
+    # 7 – ochrana pozície: bracket (stop+cieľ u brokera) alebo stop (samostatný stop u brokera, cieľ stráži engine)
+    """
+    ALTER TABLE orders ADD COLUMN protect TEXT NOT NULL DEFAULT 'bracket';
+    """,
 ]
 
 

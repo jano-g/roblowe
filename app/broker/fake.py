@@ -96,6 +96,32 @@ class FakeBroker:
         self._orders.append({"id": oid + "-sl", "symbol": symbol, "type": "stop"})
         return OrderResult(broker_id=oid, status="filled", filled_avg_price=price)
 
+    def place_stop(self, symbol, qty, stop_price) -> OrderResult:
+        if getattr(self, "fail_stop", 0) > 0:
+            self.fail_stop -= 1
+            raise RuntimeError("stop rejected")
+        oid = f"fake-stop-{symbol}-{len(self.submitted) + 1}"
+        self._orders.append({"id": oid, "symbol": symbol, "type": "stop", "stop": stop_price})
+        self.submitted.append({"id": oid, "symbol": symbol, "qty": qty, "side": "stop", "stop": stop_price})
+        return OrderResult(broker_id=oid, status="new")
+
+    def submit_fractional_buy(self, symbol, qty, stop_price) -> OrderResult:
+        price = self._prices[symbol]
+        cost = price * qty
+        if cost > self._cash:
+            raise RuntimeError("insufficient funds")
+        self._cash -= cost
+        self._pos[symbol] = Position(symbol, qty, price, price, cost, 0.0, 0.0)
+        oid = f"fake-{len(self.submitted) + 1}"
+        self.submitted.append({"id": oid, "symbol": symbol, "qty": qty, "side": "buy", "stop": stop_price, "fractional": True})
+        try:
+            self.place_stop(symbol, qty, stop_price)
+        except RuntimeError as e:
+            self._pos.pop(symbol, None)
+            self._cash += cost
+            raise RuntimeError(f"{symbol}: stop-loss sa nepodarilo zadať ({e}), pozícia hneď zatvorená.") from e
+        return OrderResult(broker_id=oid, status="filled", filled_avg_price=price)
+
     def close_position(self, symbol) -> OrderResult:
         if self.fail_close > 0:
             self.fail_close -= 1

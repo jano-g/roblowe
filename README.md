@@ -26,7 +26,10 @@ z mobilu na dashboarde.
    - denná strata 2 % → všetko zavrie a do zajtra nič nekúpi,
    - 10 minút pred zatvorením zavrie všetko, prvých 15 minút a poslednú hodinu nevstupuje,
 6. **Objednávky** sú bracket (market vstup + stop-loss + take-profit u brokera), takže stop drží
-   aj keď appka spadne.
+   aj keď appka spadne. Pri zapnutých **zlomkových akciách** (Nastavenia → Riziko) agent kúpi presnú
+   sumu aj z drahého titulu: market nákup + samostatný stop-loss u brokera, cieľ stráži agent každý
+   cyklus (bracket pre zlomky Alpaca nemá). Celé kusy použije vždy, keď vyplnia aspoň 75 % cieľovej
+   pozície. Pri malom účte (do ~5 000 USD) zlomky zapni, inak väčšinu signálov preskočí.
 
 Claude nikdy neposiela objednávky – dodáva iba skóre. Všetko ostatné je deterministický kód,
 ktorý si vieš prečítať v `app/strategy/`.
