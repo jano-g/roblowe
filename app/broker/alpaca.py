@@ -12,6 +12,7 @@ from .. import config
 from .base import Account, Bar, Clock, NewsItem, OrderResult, Position
 
 log = logging.getLogger("roblowe.alpaca")
+_DONE = {"filled", "canceled", "expired", "rejected", "replaced", "done_for_day"}
 
 
 class BrokerError(Exception):
@@ -45,7 +46,12 @@ class AlpacaBroker:
         if r.status_code >= 400:
             # telo neposielame do UI, len do logu (bez kľúčov)
             log.warning("Alpaca %s %s -> %s %s", method, path, r.status_code, r.text[:300])
-            raise BrokerError(f"Alpaca odmietla požiadavku ({r.status_code}).")
+            # do notifikácie len Alpaca „message“ (napr. insufficient qty available) – žiadne kľúče
+            try:
+                msg = str((r.json() or {}).get("message") or "")[:120]
+            except ValueError:
+                msg = ""
+            raise BrokerError(f"Alpaca odmietla požiadavku ({r.status_code}{': ' + msg if msg else ''}).")
         if r.status_code == 204 or not r.content:
             return None
         return r.json()
@@ -181,36 +187,54 @@ class AlpacaBroker:
         # zatváracia objednávka (DELETE /v2/positions) = market sell; bracket nohy sú limit/stop
         return od.get("side") == "sell" and od.get("type") == "market"
 
-    def close_position(self, symbol: str) -> OrderResult:
-        # Ak už zatváracia objednávka čaká (predošlý pokus), nič nerušíme – inak by sme ju zrušili
-        # a nové zatvorenie by Alpaca odmietla (403 „insufficient qty available“).
-        orders = [od for od in self.open_orders() if od.get("symbol") == symbol]
-        pending = next((od for od in orders if self._is_close(od)), None)
-        if pending:
-            return OrderResult(broker_id=pending.get("id", ""), status="pending")
-        # Zruš bracket „nohy“ (TP/SL), inak Alpaca odmietne uzavretie pre held qty.
-        # Rušenie je asynchrónne – chvíľu počkaj, kým zmiznú.
+    def _symbol_orders(self, symbol: str) -> list[dict]:
+        """Otvorené objednávky symbolu vrátane bracket nôh (nested=true – nohy so stavom „held“
+        v plochom zozname nemusia byť, no držia množstvo a zatvorenie by skončilo 403)."""
+        out = []
+        for od in self._call(self._t, "GET", "/v2/orders",
+                             params={"status": "open", "symbols": symbol, "nested": "true", "limit": 200}) or []:
+            out.append(od)
+            out.extend(leg for leg in od.get("legs") or [] if leg.get("status") not in _DONE)
+        return [od for od in out if od.get("symbol") == symbol]
+
+    def _cancel_symbol_orders(self, orders: list[dict], symbol: str) -> None:
         for od in orders:
             try:
                 self._call(self._t, "DELETE", f"/v2/orders/{od['id']}")
             except BrokerError:
                 pass
+        # rušenie je asynchrónne – chvíľu počkaj, kým zmiznú
         for _ in range(10):
-            if not any(od.get("symbol") == symbol for od in self.open_orders()):
-                break
+            if not self._symbol_orders(symbol):
+                return
             time.sleep(0.5)
-        try:
-            o = self._call(self._t, "DELETE", f"/v2/positions/{symbol}")
-        except BrokerError:
-            # 403 často znamená, že pozícia sa už zatvára/zatvorila – over skôr, než to nahlásime
-            if not any(p.symbol == symbol for p in self.positions()):
-                return OrderResult(broker_id="", status="closed")
-            pending = next((od for od in self.open_orders()
-                            if od.get("symbol") == symbol and self._is_close(od)), None)
-            if pending:
-                return OrderResult(broker_id=pending.get("id", ""), status="pending")
-            raise
-        return OrderResult(broker_id=(o or {}).get("id", ""), status=(o or {}).get("status", "accepted"))
+
+    def close_position(self, symbol: str) -> OrderResult:
+        # Ak už zatváracia objednávka čaká (predošlý pokus), nič nerušíme – inak by sme ju zrušili
+        # a nové zatvorenie by Alpaca odmietla (403 „insufficient qty available“).
+        orders = self._symbol_orders(symbol)
+        pending = next((od for od in orders if self._is_close(od)), None)
+        if pending:
+            return OrderResult(broker_id=pending.get("id", ""), status="pending")
+        # Zruš bracket „nohy“ (TP/SL) a samostatné stopy, inak Alpaca odmietne uzavretie pre held qty.
+        self._cancel_symbol_orders(orders, symbol)
+        for attempt in range(2):
+            try:
+                o = self._call(self._t, "DELETE", f"/v2/positions/{symbol}")
+                return OrderResult(broker_id=(o or {}).get("id", ""), status=(o or {}).get("status", "accepted"))
+            except BrokerError:
+                # 403 môže znamenať, že pozícia sa už zatvára/zatvorila – over skôr, než to nahlásime
+                if not any(p.symbol == symbol for p in self.positions()):
+                    return OrderResult(broker_id="", status="closed")
+                left = self._symbol_orders(symbol)
+                pending = next((od for od in left if self._is_close(od)), None)
+                if pending:
+                    return OrderResult(broker_id=pending.get("id", ""), status="pending")
+                if attempt:
+                    raise
+                self._cancel_symbol_orders(left, symbol)  # niečo stále drží množstvo – zruš a skús znova
+                time.sleep(1)
+        raise BrokerError("Alpaca: zatvorenie zlyhalo.")  # sem sa nedostane
 
     def close_all(self) -> None:
         """Zruší objednávky (okrem čakajúcich zatvorení) a zavrie každú pozíciu zvlášť. Hromadné

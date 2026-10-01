@@ -98,7 +98,7 @@ def test_alpaca_fractional_bodies(monkeypatch):
                            "stop_price": "130.46"}
 
 
-def _alpaca(monkeypatch, orders, positions, delete_pos_fails=False):
+def _alpaca(monkeypatch, orders, positions, delete_pos_fails=False, held=None):
     from app.broker.alpaca import BrokerError
     calls = []
 
@@ -112,6 +112,9 @@ def _alpaca(monkeypatch, orders, positions, delete_pos_fails=False):
             orders[:] = [o for o in orders if o["id"] != path.rsplit("/", 1)[1]]
             return None
         if method == "DELETE" and path.startswith("/v2/positions/"):
+            if held:  # ešte nezrušená noha drží množstvo
+                orders.append(held.pop())
+                raise BrokerError("Alpaca odmietla požiadavku (403: insufficient qty available).")
             if delete_pos_fails:
                 positions.clear()  # medzitým sa pozícia zavrela
                 raise BrokerError("Alpaca odmietla požiadavku (403).")
@@ -136,3 +139,15 @@ def test_alpaca_close_403_on_already_closed_is_ok(monkeypatch):
     b, calls = _alpaca(monkeypatch, orders, pos, delete_pos_fails=True)
     assert b.close_position("AMD").status == "closed"
     assert ("DELETE", "/v2/orders/tp") in calls
+
+
+def test_alpaca_close_cancels_held_leg_and_retries(monkeypatch):
+    orders = [{"id": "br", "symbol": "AMD", "side": "sell", "type": "limit",
+               "legs": [{"id": "sl", "symbol": "AMD", "side": "sell", "type": "stop", "status": "held"}]}]
+    pos = [{"symbol": "AMD", "qty": "3", "avg_entry_price": "150"}]
+    late = {"id": "sl2", "symbol": "AMD", "side": "sell", "type": "stop"}
+    b, calls = _alpaca(monkeypatch, orders, pos, held=[late])
+    assert b.close_position("AMD").status == "accepted"
+    dels = [c[1] for c in calls if c[0] == "DELETE"]
+    assert "/v2/orders/sl" in dels and "/v2/orders/sl2" in dels
+    assert dels.count("/v2/positions/AMD") == 2
