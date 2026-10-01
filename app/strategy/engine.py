@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Callable
@@ -59,6 +60,9 @@ class Engine:
         self.notify = lambda title, msg: _send(f"{title} · {_label}", msg)
         self._now = now or (lambda: datetime.now(timezone.utc))
         self.news = news or NewsState()
+        self.flatten_error = ""
+        self.flat_wait_s = 20.0  # koľko čakať na vyplnenie zatváracích objednávok
+        self._flat_alert = ""  # dátum, kedy už odišla CHYBA o nezavretých pozíciách
         self.last_report: CycleReport | None = None
         if not self.news.views:
             self._load_recent_analysis()
@@ -139,20 +143,41 @@ class Engine:
         return self.mode in ("paper", "live")
 
     # -- akcie -------------------------------------------------------------------------
-    def flatten_all(self, reason: str, positions: list[Position]) -> list[dict]:
+    def flatten_all(self, reason: str, positions: list[Position], alert: bool = True) -> list[dict]:
+        """Zavrie všetko u brokera. Chybu pošle hneď (alert) alebo ju nechá v `self.flatten_error`
+        – koniec seansy hlási až keď pozície naozaj ostanú otvorené (Alpaca často vráti 403,
+        lebo zatváracia objednávka z predošlého pokusu ešte čaká, a pozícia sa aj tak zavrie)."""
         out = []
+        self.flatten_error = ""
         if self._live():
             try:
                 self.broker.close_all()
             except Exception as e:  # noqa: BLE001
-                log.exception("close_all zlyhalo")
-                self.notify("Roblowe: CHYBA", f"Zatvorenie pozícií zlyhalo: {e}")
-        for p in positions:
+                log.warning("close_all zlyhalo: %s", e)
+                self.flatten_error = str(e)
+                if alert:
+                    self.notify("Roblowe: CHYBA", f"Zatvorenie pozícií zlyhalo: {e}")
+        # záznam len raz za deň a symbol – opakované pokusy v ďalších cykloch ho neduplikujú
+        d0 = datetime.strptime(self.trading_date(self._now()), "%Y-%m-%d").replace(tzinfo=config.MARKET_TZ)
+        done = {r["symbol"] for r in db.q(
+            "SELECT symbol FROM orders WHERE account=? AND kind='flatten' AND at >= ?",
+            (self.account, d0.astimezone(timezone.utc).isoformat()))}
+        fresh = [p for p in positions if p.symbol not in done]
+        for p in fresh:
             out.append(self._order(p.symbol, "sell", p.qty, "flatten", price=p.current_price,
                                    status="submitted" if self._live() else "dry", note=reason))
-        if positions and settings.get("notify_mode") in ("trade", "both"):
-            self.notify("Roblowe: zatváram všetko", f"{reason} · {len(positions)} pozícií")
+        if fresh and settings.get("notify_mode") in ("trade", "both"):
+            self.notify("Roblowe: zatváram všetko", f"{reason} · {len(fresh)} pozícií")
         return out
+
+    def _wait_flat(self, symbols: set[str]) -> list[Position]:
+        """Market zatvorenia sa plnia s oneskorením – chvíľu počkaj, kým broker pozície naozaj zruší."""
+        deadline = time.monotonic() + self.flat_wait_s
+        while True:
+            left = [p for p in self.broker.positions() if p.symbol in symbols]
+            if not left or time.monotonic() >= deadline:
+                return left
+            time.sleep(2)
 
     def close(self, p: Position, reason: str) -> dict:
         broker_id, status = None, "dry"
@@ -287,12 +312,17 @@ class Engine:
         #     kým broker hlási otvorené pozície (príznak flattened nikdy nič nepreskočí).
         if mins_to_close <= settings.get("flatten_before_close_min"):
             if positions:
-                rep.orders += self.flatten_all("koniec seansy", positions)
-            left = self.broker.positions() if (positions and self._live()) else []
+                rep.orders += self.flatten_all("koniec seansy", positions, alert=False)
+            left = self._wait_flat({p.symbol for p in positions}) if (positions and self._live()) else []
             if left:
-                rep.notes.append(f"Stále otvorené: {', '.join(p.symbol for p in left)} – skúsim znova v ďalšom cykle.")
-                self.notify("Roblowe: CHYBA", f"Pozície sa nepodarilo zavrieť pred koncom seansy: "
-                            f"{', '.join(p.symbol for p in left)}. Skontroluj Alpaca.")
+                names = ", ".join(p.symbol for p in left)
+                rep.notes.append(f"Stále otvorené: {names} – skúsim znova v ďalšom cykle.")
+                # CHYBA len keď už ďalší cyklus pred zatvorením burzy nepríde (a raz za deň)
+                if mins_to_close <= settings.get("cycle_minutes") and self._flat_alert != date:
+                    self._flat_alert = date
+                    why = f" ({self.flatten_error})" if self.flatten_error else ""
+                    self.notify("Roblowe: CHYBA", f"Pozície sa nepodarilo zavrieť pred koncom seansy: "
+                                f"{names}{why}. Skontroluj Alpaca.")
             elif not day["flattened"]:
                 with db.tx():
                     db.run("UPDATE days SET flattened=1 WHERE account=? AND date=?", (self.account, date))
@@ -538,12 +568,12 @@ class Engine:
             equity = self.broker.account().equity
         except Exception:  # noqa: BLE001
             equity = 0.0
-        self.flatten_all(f"ručný STOP ({actor})", positions)
-        if self._live():
+        if self._live():  # najprv zrušiť – po zatvorení by sa zrušili aj čakajúce zatváracie objednávky
             try:
                 self.broker.cancel_all_orders()
             except Exception:  # noqa: BLE001
                 log.exception("cancel_all_orders zlyhalo")
+        self.flatten_all(f"ručný STOP ({actor})", positions)
         date = self.trading_date(self._now())
         with db.tx():
             db.run("INSERT INTO days(account, date, start_equity, halted, halt_reason, created_at) VALUES (?,?,?,1,?,?) "

@@ -27,6 +27,7 @@ def make_engine(mode="paper", **kw):
                                        "next_close": NOW + timedelta(hours=5)})()
     settings.set_many({"watchlist": "AAA,BBB", "agent_enabled": "1", "analyst_enabled": "0", **kw}, [], "test")
     eng = Engine(fb, None, mode, notify=lambda t, m: None, now=lambda: NOW)
+    eng.flat_wait_s = 0
     return fb, eng
 
 
@@ -202,6 +203,36 @@ def test_flatten_retries_until_positions_closed():
     eng.cycle()  # ďalší cyklus to dokončí
     assert fb.positions() == []
     assert db.row("SELECT flattened FROM days")["flattened"] == 1
+    assert db.row("SELECT COUNT(*) n FROM orders WHERE kind='flatten'")["n"] == 1  # bez duplikátov
+
+
+def _closing_engine(mins):
+    fb, eng = make_engine()
+    sent = []
+    eng.notify = lambda t, m: sent.append(t)
+    fb.set_bars("AAA", trend_bars(0.4))
+    eng.cycle()
+    fb.clock = lambda: type("C", (), {"is_open": True, "now": NOW, "next_open": NOW + timedelta(days=1),
+                                       "next_close": NOW + timedelta(minutes=mins)})()
+    return fb, eng, sent
+
+
+def test_flatten_transient_failure_sends_no_error():
+    fb, eng, sent = _closing_engine(8)  # ešte príde ďalší cyklus pred zatvorením
+    fb.fail_close = 1
+    eng.cycle()
+    eng.cycle()
+    assert fb.positions() == []
+    assert not [t for t in sent if "CHYBA" in t]
+
+
+def test_flatten_error_only_on_last_chance_and_once():
+    fb, eng, sent = _closing_engine(3)  # ďalší cyklus by bol až po zatvorení
+    fb.fail_close = 99
+    eng.cycle()
+    eng.cycle()
+    assert len(fb.positions()) == 1
+    assert len([t for t in sent if "CHYBA" in t]) == 1
 
 
 def test_leftover_position_from_previous_day_is_closed():

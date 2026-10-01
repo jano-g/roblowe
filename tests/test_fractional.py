@@ -96,3 +96,43 @@ def test_alpaca_fractional_bodies(monkeypatch):
     assert posts[0][2] == {"symbol": "AAPL", "qty": "0.683", "side": "buy", "type": "market", "time_in_force": "day"}
     assert posts[1][2] == {"symbol": "AAPL", "qty": "0.683", "side": "sell", "type": "stop", "time_in_force": "day",
                            "stop_price": "130.46"}
+
+
+def _alpaca(monkeypatch, orders, positions, delete_pos_fails=False):
+    from app.broker.alpaca import BrokerError
+    calls = []
+
+    def fake_call(self, client, method, path, **kw):
+        calls.append((method, path))
+        if method == "GET" and path == "/v2/orders":
+            return orders
+        if method == "GET" and path == "/v2/positions":
+            return positions
+        if method == "DELETE" and path.startswith("/v2/orders/"):
+            orders[:] = [o for o in orders if o["id"] != path.rsplit("/", 1)[1]]
+            return None
+        if method == "DELETE" and path.startswith("/v2/positions/"):
+            if delete_pos_fails:
+                positions.clear()  # medzitým sa pozícia zavrela
+                raise BrokerError("Alpaca odmietla požiadavku (403).")
+            return {"id": "c1", "status": "accepted"}
+        return None
+    monkeypatch.setattr(AlpacaBroker, "_call", fake_call)
+    monkeypatch.setattr("app.broker.alpaca.time.sleep", lambda s: None)
+    return AlpacaBroker("k", "s", "https://paper-api.alpaca.markets"), calls
+
+
+def test_alpaca_close_keeps_pending_close_order(monkeypatch):
+    orders = [{"id": "m1", "symbol": "AMD", "side": "sell", "type": "market"}]
+    b, calls = _alpaca(monkeypatch, orders, [])
+    r = b.close_position("AMD")
+    assert r.status == "pending" and r.broker_id == "m1"
+    assert not [c for c in calls if c[0] == "DELETE"]
+
+
+def test_alpaca_close_403_on_already_closed_is_ok(monkeypatch):
+    orders = [{"id": "tp", "symbol": "AMD", "side": "sell", "type": "limit"}]
+    pos = [{"symbol": "AMD", "qty": "3", "avg_entry_price": "150"}]
+    b, calls = _alpaca(monkeypatch, orders, pos, delete_pos_fails=True)
+    assert b.close_position("AMD").status == "closed"
+    assert ("DELETE", "/v2/orders/tp") in calls

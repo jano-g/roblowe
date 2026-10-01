@@ -176,27 +176,52 @@ class AlpacaBroker:
             raise BrokerError(f"{symbol}: stop-loss sa nepodarilo zadať ({e}), pozícia hneď zatvorená.") from e
         return OrderResult(broker_id=oid, status="filled", filled_avg_price=avg)
 
+    @staticmethod
+    def _is_close(od: dict) -> bool:
+        # zatváracia objednávka (DELETE /v2/positions) = market sell; bracket nohy sú limit/stop
+        return od.get("side") == "sell" and od.get("type") == "market"
+
     def close_position(self, symbol: str) -> OrderResult:
-        # Najprv zruš bracket „nohy“ (TP/SL), inak Alpaca odmietne uzavretie pre held qty
-        # („insufficient qty available“). Rušenie je asynchrónne – chvíľu počkaj, kým zmiznú.
-        for od in self.open_orders():
-            if od.get("symbol") == symbol:
-                try:
-                    self._call(self._t, "DELETE", f"/v2/orders/{od['id']}")
-                except BrokerError:
-                    pass
-        for _ in range(6):
+        # Ak už zatváracia objednávka čaká (predošlý pokus), nič nerušíme – inak by sme ju zrušili
+        # a nové zatvorenie by Alpaca odmietla (403 „insufficient qty available“).
+        orders = [od for od in self.open_orders() if od.get("symbol") == symbol]
+        pending = next((od for od in orders if self._is_close(od)), None)
+        if pending:
+            return OrderResult(broker_id=pending.get("id", ""), status="pending")
+        # Zruš bracket „nohy“ (TP/SL), inak Alpaca odmietne uzavretie pre held qty.
+        # Rušenie je asynchrónne – chvíľu počkaj, kým zmiznú.
+        for od in orders:
+            try:
+                self._call(self._t, "DELETE", f"/v2/orders/{od['id']}")
+            except BrokerError:
+                pass
+        for _ in range(10):
             if not any(od.get("symbol") == symbol for od in self.open_orders()):
                 break
             time.sleep(0.5)
-        o = self._call(self._t, "DELETE", f"/v2/positions/{symbol}")
+        try:
+            o = self._call(self._t, "DELETE", f"/v2/positions/{symbol}")
+        except BrokerError:
+            # 403 často znamená, že pozícia sa už zatvára/zatvorila – over skôr, než to nahlásime
+            if not any(p.symbol == symbol for p in self.positions()):
+                return OrderResult(broker_id="", status="closed")
+            pending = next((od for od in self.open_orders()
+                            if od.get("symbol") == symbol and self._is_close(od)), None)
+            if pending:
+                return OrderResult(broker_id=pending.get("id", ""), status="pending")
+            raise
         return OrderResult(broker_id=(o or {}).get("id", ""), status=(o or {}).get("status", "accepted"))
 
     def close_all(self) -> None:
-        """Zruší všetky objednávky a zavrie každú pozíciu zvlášť. Hromadné DELETE /v2/positions
-        vracia 207 a pri ešte nezrušených bracket nohách jednotlivé pozície potichu odmietne."""
+        """Zruší objednávky (okrem čakajúcich zatvorení) a zavrie každú pozíciu zvlášť. Hromadné
+        DELETE /v2/positions vracia 207 a pri ešte nezrušených bracket nohách pozície potichu odmietne."""
         try:
-            self.cancel_all_orders()
+            for od in self.open_orders():
+                if not self._is_close(od):
+                    try:
+                        self._call(self._t, "DELETE", f"/v2/orders/{od['id']}")
+                    except BrokerError:
+                        pass
         except BrokerError:
             pass
         errors = []
